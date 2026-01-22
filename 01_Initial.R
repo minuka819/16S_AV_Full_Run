@@ -122,9 +122,6 @@ min_depth
 library(phyloseq)
 library(ggplot2)
 
-library(phyloseq)
-library(ggplot2)
-
 # Build read depth dataframe
 read_depth_all <- data.frame(
   Sample = sample_names(PS_16S),
@@ -144,7 +141,22 @@ read_depth_all$Sample <- factor(
 
 # Plot
 
-
+ggplot(read_depth_all, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(
+    values = c(
+      "Leaf" = "#028A0F",
+      "Sponge" = "#02A3D3"
+    )
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Read depth per sample",
+    x = "Sample",
+    y = "Read depth",
+    fill = "Sample Type"
+  )
 
 
 
@@ -185,6 +197,108 @@ ggplot(read_depth_df, aes(x = Timepoint, y = Reads, fill = Sample_Type)) +
 
 
 
+library(phyloseq)
+library(ggplot2)
 
+PS_16S_no_control
+
+# Build read depth dataframe
+read_depth_PS_no_control <- data.frame(
+  Sample = sample_names(PS_16S_no_control),
+  Reads = sample_sums(PS_16S_no_control),
+  Sample_Type = sample_data(PS_16S_no_control)$Sample_Type,
+  Timepoint = sample_data(PS_16S_no_control)$Timepoint
+)
+
+# Plot
+
+ggplot(read_depth_PS_no_control, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(
+    values = c(
+      "Leaf" = "#028A0F",
+      "Sponge" = "#02A3D3"
+    )
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Read depth per sample",
+    x = "Sample",
+    y = "Read depth",
+    fill = "Sample Type"
+  )
+
+depth_df <- data.frame(
+  Sample = sample_names(PS_16S_no_control),
+  Reads = sample_sums(PS_16S_no_control),
+  Sample_Type = sample_data(PS_16S_no_control)$Sample_Type
+)
+
+tapply(depths, sample_data(PS_16S_no_control)$Sample_Type, summary)
+tapply(depths, sample_data(PS_16S_no_control)$Sample_Type, min)
+
+29603
+
+
+set.seed(123)
+RARE_DEPTH <- 29600  # example
+
+PS_rare <- rarefy_even_depth(
+  PS_16S_no_control,
+  sample.size = RARE_DEPTH,
+  rngseed = 123,
+  replace = FALSE,
+  verbose = FALSE
+)
+
+PS_rare
+
+library(phyloseq)
+library(ggplot2)
+library(patchwork)
+
+# ---- Helper: make a read depth df ----
+make_depth_df <- function(ps) {
+  df <- data.frame(
+    Sample = sample_names(ps),
+    Reads = sample_sums(ps),
+    Sample_Type = sample_data(ps)$Sample_Type
+  )
+  df <- df[order(df$Reads), ]
+  df$Sample <- factor(df$Sample, levels = df$Sample)
+  df
+}
+
+# ---- BEFORE (pre-rarefaction) ----
+depth_before <- make_depth_df(PS_16S_no_control)
+
+plot_read_depth_before <- ggplot(depth_before, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Before rarefaction", x = "Sample", y = "Read depth", fill = "Sample Type")
+
+# ---- AFTER (post-rarefaction) ----
+depth_after <- make_depth_df(PS_rare)
+
+plot_read_depth_after <- ggplot(depth_after, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "After rarefaction (29,600 reads/sample)", x = "Sample", y = "Read depth", fill = "Sample Type")
+
+# ---- Arrow plot (your style) ----
+arrow_plot <- ggplot() +
+  annotate("text", x = 0.5, y = 0.5, label = "→", size = 20) +
+  theme_void()
+
+# ---- Final side-by-side ----
+final_plot <- plot_read_depth_before + arrow_plot + plot_read_depth_after +
+  plot_layout(widths = c(1, 0.12, 1))
+
+final_plot
 
 
