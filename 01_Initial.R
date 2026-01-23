@@ -271,6 +271,9 @@ make_depth_df <- function(ps) {
 }
 
 # ---- BEFORE (pre-rarefaction) ----
+ymax <- max(sample_sums(PS_16S_no_control))
+ymax
+
 depth_before <- make_depth_df(PS_16S_no_control)
 
 plot_read_depth_before <- ggplot(depth_before, aes(x = Sample, y = Reads, fill = Sample_Type)) +
@@ -296,9 +299,47 @@ arrow_plot <- ggplot() +
   theme_void()
 
 # ---- Final side-by-side ----
-final_plot <- plot_read_depth_before + arrow_plot + plot_read_depth_after +
-  plot_layout(widths = c(1, 0.12, 1))
+
+plot_read_depth_before <- plot_read_depth_before +
+  coord_cartesian(ylim = c(0, ymax))
+
+plot_read_depth_after <- plot_read_depth_after +
+  coord_cartesian(ylim = c(0, ymax))
+
+final_plot <- plot_read_depth_before +scale_y_continuous(labels = scales::comma) + arrow_plot + plot_read_depth_after +
+  plot_layout(widths = c(1, 0.12, 1)) + scale_y_continuous(labels = scales::comma)
+
 
 final_plot
+
+
+###-Alpha Diversity-###
+
+
+
+library(phyloseq)
+library(ggplot2)
+
+alpha_df <- estimate_richness(PS_rare, measures = c("Observed", "Shannon"))
+alpha_df$Sample_Type <- sample_data(PS_rare)$Sample_Type
+
+# Observed ASVs
+ggplot(alpha_df, aes(x = Sample_Type, y = Observed, fill = Sample_Type)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "Alpha diversity (Observed ASVs) - rarefied", x = NULL, y = "Observed ASVs") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3"))+
+
+# Shannon
+ggplot(alpha_df, aes(x = Sample_Type, y = Shannon, fill = Sample_Type)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(title = "Alpha diversity (Shannon) - rarefied", x = NULL, y = "Shannon") +
+  theme(legend.position = "none")+
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3"))
+
+
+
 
 
