@@ -1,3 +1,7 @@
+### --- CHAPTER 1 --- ###
+
+### --- INITIAL QC AND INVESTIGATIONS --- ###
+
 # Helper function: install and load required packages automatically
 load_packages <- function(pkg_list) {
   to_install <- pkg_list[!pkg_list %in% installed.packages()[, "Package"]]
@@ -323,6 +327,9 @@ library(ggplot2)
 alpha_df <- estimate_richness(PS_rare, measures = c("Observed", "Shannon"))
 alpha_df$Sample_Type <- sample_data(PS_rare)$Sample_Type
 
+p_obs <- wilcox.test(Observed ~ Sample_Type, data = alpha_df)$p.value
+p_sha <- wilcox.test(Shannon  ~ Sample_Type, data = alpha_df)$p.value
+
 # Observed ASVs
 ggplot(alpha_df, aes(x = Sample_Type, y = Observed, fill = Sample_Type)) +
   geom_boxplot() +
@@ -339,7 +346,192 @@ ggplot(alpha_df, aes(x = Sample_Type, y = Shannon, fill = Sample_Type)) +
   theme(legend.position = "none")+
   scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3"))
 
+COLORS <- c(
+  "Leaf"   = "#028A0F",
+  "Sponge" = "#02A3D3"
+)
 
+
+p1 <- ggplot(alpha_df, aes(x = Sample_Type, y = Observed, fill = Sample_Type)) +
+  geom_boxplot() +
+  scale_fill_manual(values = COLORS) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Observed ASVs", x = NULL, y = "Observed") +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(alpha_df$Observed) * 1.05,
+    label = paste0("Wilcoxon p = ", formatC(p_obs, format = "e", digits = 2))
+  )
+
+p2 <- ggplot(alpha_df, aes(x = Sample_Type, y = Shannon, fill = Sample_Type)) +
+  geom_boxplot() +
+  scale_fill_manual(values = COLORS) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Shannon diversity", x = NULL, y = "Shannon") +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(alpha_df$Shannon) * 1.05,
+    label = paste0("Wilcoxon p = ", formatC(p_sha, format = "e", digits = 2))
+  )
+
+p1 + p2
+
+library(phyloseq)
+library(ggplot2)
+
+COLORS <- c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")
+
+# Use non-rarefied for composition plots
+ps <- PS_16S_no_control
+
+# Keep only Leaf + Sponge
+ps <- subset_samples(ps, Sample_Type %in% c("Leaf", "Sponge"))
+ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+
+# (Recommended) remove host organelles if present in taxonomy
+# If this errors due to rank names, run: rank_names(ps)
+ps <- subset_taxa(ps, Order != "Chloroplast" & Family != "Mitochondria")
+ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+
+# Agglomerate to Genus (change to "Phylum" if you prefer)
+ps_g <- tax_glom(ps, taxrank = "Genus", NArm = FALSE)
+
+# Convert to relative abundance
+ps_rel <- transform_sample_counts(ps_g, function(x) x / sum(x))
+
+# Identify Top 30 taxa across all samples
+top30 <- names(sort(taxa_sums(ps_rel), decreasing = TRUE))[1:30]
+
+# Prune to Top 30 and collapse the rest into "Other"
+ps_top <- prune_taxa(top30, ps_rel)
+
+# Melt to long format for ggplot
+df <- psmelt(ps_top)
+
+# If Genus is NA, label as "Unassigned"
+df$Genus <- as.character(df$Genus)
+df$Genus[is.na(df$Genus) | df$Genus == ""] <- "Unassigned"
+
+# Plot: bars per sample, faceted by Sample_Type (clean comparison)
+ggplot(df, aes(x = Sample, y = Abundance, fill = Genus)) +
+  geom_col() +
+  facet_wrap(~ Sample_Type, scales = "free_x") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Top 30 genera (relative abundance)",
+    x = "Sample",
+    y = "Relative abundance",
+    fill = "Genus"
+  )
+
+
+library(dplyr)
+
+df_sum <- df %>%
+  group_by(Sample_Type, Genus) %>%
+  summarise(MeanAbundance = mean(Abundance), .groups = "drop")
+
+ggplot(df_sum, aes(x = Sample_Type, y = MeanAbundance, fill = Genus)) +
+  geom_col() +
+  scale_x_discrete(limits = c("Leaf", "Sponge")) +
+  theme_bw() +
+  labs(
+    title = "Top 30 genera (mean relative abundance by sample type)",
+    x = NULL,
+    y = "Mean relative abundance",
+    fill = "Genus"
+  )
+
+# ps_bact = after removing chloroplast + mito, before rarefaction
+ps_bact <- subset_samples(PS_16S_no_control, Sample_Type %in% c("Leaf","Sponge"))
+ps_bact <- prune_taxa(taxa_sums(ps_bact) > 0, ps_bact)
+ps_bact <- subset_taxa(ps_bact, Order != "Chloroplast" & Family != "Mitochondria")
+ps_bact <- prune_taxa(taxa_sums(ps_bact) > 0, ps_bact)
+
+bact_depth <- data.frame(
+  Sample = sample_names(ps_bact),
+  Bacterial_Reads = sample_sums(ps_bact),
+  Sample_Type = sample_data(ps_bact)$Sample_Type
+)
+
+bact_depth
+
+ggplot(bact_depth, aes(x = Sample_Type, y = Bacterial_Reads, fill = Sample_Type)) +
+  stat_summary(fun = mean, geom = "bar", width = 0.6) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  scale_fill_manual(values = COLORS) +
+  theme_bw() +
+  labs(
+    title = "Total bacterial read depth after host removal",
+    x = NULL,
+    y = "Mean bacterial reads"
+  ) +
+  theme(legend.position = "none")
+
+### - PIE CHARTS - ###
+
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ---------- Colors ----------
+PIE_COLORS <- c("Host" = "grey70", "Bacterial" = "steelblue")
+
+# ---------- Identify host taxa (chloroplast + mitochondria) ----------
+is_chloro <- tax_table(PS_16S_no_control)[, "Order"] == "Chloroplast"
+is_mito   <- tax_table(PS_16S_no_control)[, "Family"] == "Mitochondria"
+host_ids  <- taxa_names(PS_16S_no_control)[(is_chloro | is_mito)]
+
+# ---------- Per-sample host vs bacterial reads ----------
+host_bact_df <- data.frame(
+  Sample      = sample_names(PS_16S_no_control),
+  Sample_Type = sample_data(PS_16S_no_control)$Sample_Type,
+  Host_Reads  = sample_sums(prune_taxa(host_ids, PS_16S_no_control)),
+  Total_Reads = sample_sums(PS_16S_no_control)
+) %>%
+  mutate(
+    Bacterial_Reads = Total_Reads - Host_Reads
+  )
+
+# ---------- Mean fractions + mean reads by Sample_Type (for pie charts) ----------
+pie_df <- host_bact_df %>%
+  group_by(Sample_Type) %>%
+  summarise(
+    Host = mean(Host_Reads, na.rm = TRUE),
+    Bacterial = mean(Bacterial_Reads, na.rm = TRUE),
+    Total = mean(Total_Reads, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c("Host", "Bacterial"),
+               names_to = "Category",
+               values_to = "Reads") %>%
+  mutate(
+    Fraction = Reads / Total,
+    Label = paste0(
+      Category, "\n",
+      format(round(Reads), big.mark = ","), " reads\n(",
+      round(Fraction * 100, 1), "%)"
+    )
+  )
+
+# ---------- Plot ----------
+ggplot(pie_df, aes(x = "", y = Fraction, fill = Category)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_wrap(~ Sample_Type) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), size = 4) +
+  scale_fill_manual(values = PIE_COLORS) +
+  theme_void() +
+  labs(
+    title = "Host vs bacterial reads by sample type",
+    fill = NULL
+  )
 
 
 
