@@ -4,7 +4,7 @@
 
 PS_16S_Sponge
 
-taxa_df <- get_taxa(PS_16S_Sponge)
+taxa_df <- as.data.frame(tax_table(PS_sponge))
 
 
 PS_sponge <- prune_taxa(taxa_sums(PS_16S_Sponge) > 0, PS_16S_Sponge)
@@ -92,7 +92,7 @@ pairwise_results <- by(alpha_df, alpha_df$Timepoint, function(d) {
 })
 pairwise_results
 
-bray_dist <- phyloseq::distance(PS_sponge, method = "bray")
+bray_dist <- phyloseq::distance(PS_sponge_rare, method = "bray")
 
 ord_bray <- ordinate(PS_sponge, method = "PCoA", distance = bray_dist)
 
@@ -126,7 +126,7 @@ p_bray
 library(vegan)
 
 # Extract metadata
-meta <- data.frame(sample_data(PS_sponge))
+meta <- data.frame(sample_data(PS_sponge_rare))
 
 # PERMANOVA: main effects + interaction
 adonis_res <- adonis2(
@@ -161,6 +161,72 @@ plot_ordination(
     title = "Bray–Curtis PCoA by timepoint (sponge samples)",
     color = "Timepoint"
   )
+
+
+#### - JACCARD BETA - ####
+
+
+library(phyloseq)
+library(vegan)
+library(ggplot2)
+
+# ---- 1) Subset rarefied object to sponge + experimental tanks ----
+ps <- subset_samples(PS_rare, Sample_Type == "Sponge" & Tank_Type %in% c("Control", "Inoculated"))
+ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+
+# ---- 2) Build presence/absence OTU table safely (preserve taxa names) ----
+otu <- as(otu_table(ps), "matrix")
+
+# Ensure rows = taxa
+if (!taxa_are_rows(ps)) otu <- t(otu)
+
+otu_pa <- (otu > 0) * 1
+rownames(otu_pa) <- rownames(otu)
+colnames(otu_pa) <- colnames(otu)
+
+otu_pa <- otu_table(otu_pa, taxa_are_rows = TRUE)
+
+# ---- 3) Rebuild phyloseq object (drop tree to avoid taxa mismatch issues) ----
+tax <- tax_table(ps)
+sam <- sample_data(ps)
+
+PS_pa <- phyloseq(otu_pa, tax, sam)
+PS_pa <- prune_taxa(taxa_sums(PS_pa) > 0, PS_pa)  # just to be safe
+
+# ---- 4) Jaccard distance + PCoA ----
+jac_dist <- phyloseq::distance(PS_pa, method = "jaccard", binary = TRUE)
+ord_jac  <- ordinate(PS_pa, method = "PCoA", distance = jac_dist)
+
+TANK_COLORS <- c("Control" = "#F28E2B", "Inoculated" = "#4E79A7")
+
+p_jac <- plot_ordination(PS_pa, ord_jac, color = "Tank_Type", shape = "Timepoint") +
+  geom_point(size = 3, alpha = 0.85) +
+  scale_color_manual(values = TANK_COLORS) +
+  theme_bw() +
+  labs(
+    title = "Jaccard PCoA (presence/absence) - rarefied sponge samples",
+    color = "Tank Type",
+    shape = "Timepoint"
+  )
+
+p_jac
+
+# ---- 5) PERMANOVA (adonis2) ----
+meta <- data.frame(sample_data(PS_pa))
+meta$Timepoint <- factor(meta$Timepoint,
+                         levels = c("Pre_inoculation", "1_week_post_inoculation", "Harvest"))
+
+adonis_overall <- adonis2(jac_dist ~ Tank_Type * Timepoint, data = meta, permutations = 999)
+adonis_terms   <- adonis2(jac_dist ~ Tank_Type * Timepoint, data = meta, permutations = 999, by = "terms")
+
+adonis_overall
+adonis_terms
+
+# ---- 6) Dispersion check (important) ----
+disp_tank <- betadisper(jac_dist, meta$Tank_Type)
+anova(disp_tank)
+
+
 
 
 
@@ -238,5 +304,163 @@ ggplot(df_sum, aes(x = Genus, y = Mean_RA, fill = Tank_Type)) +
     y = "Mean relative abundance",
     fill = "Tank Type"
   )
+
+PS_actino <- subset_taxa(PS_sponge, Phylum == "Actinobacteriota")
+PS_actino <- prune_taxa(taxa_sums(PS_actino) > 0, PS_actino)
+
+# Convert to relative abundance within each sample
+PS_actino_rel <- transform_sample_counts(
+  PS_actino,
+  function(x) x / sum(x)
+)
+
+
+library(dplyr)
+
+df_actino <- psmelt(PS_actino_rel)
+
+# Keep experimental tanks only
+df_actino <- df_actino %>%
+  filter(Tank_Type %in% c("Control", "Inoculated"))
+
+# Enforce biological time order
+df_actino$Timepoint <- factor(
+  df_actino$Timepoint,
+  levels = c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )
+)
+
+df_actino_sum <- df_actino %>%
+  group_by(Timepoint, Tank_Type) %>%
+  summarise(
+    Mean_RA = mean(Abundance),
+    .groups = "drop"
+  )
+
+library(ggplot2)
+
+TANK_COLORS <- c(
+  "Control"    = "#F28E2B",
+  "Inoculated" = "#4E79A7"
+)
+
+ggplot(df_actino_sum,
+       aes(x = Timepoint, y = Mean_RA, fill = Tank_Type)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = TANK_COLORS) +
+  theme_bw() +
+  labs(
+    title = "Actinobacteria relative abundance in sponge samples",
+    x = "Timepoint",
+    y = "Mean relative abundance",
+    fill = "Tank Type"
+  )
+
+
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+
+# 1) Build Actinobacteria-only object (if not already created)
+PS_actino <- subset_taxa(PS_sponge_rare, Phylum == "Actinobacteriota")
+PS_actino <- prune_taxa(taxa_sums(PS_actino) > 0, PS_actino)
+
+# 2) Absolute Actinobacteria reads per sample (counts)
+actino_counts <- data.frame(
+  Sample = sample_names(PS_actino),
+  Actino_Reads = sample_sums(PS_actino),
+  Tank_Type = sample_data(PS_actino)$Tank_Type,
+  Timepoint = sample_data(PS_actino)$Timepoint
+)
+
+# Keep experimental tanks only
+actino_counts <- actino_counts %>%
+  filter(Tank_Type %in% c("Control", "Inoculated"))
+
+# Order timepoints
+actino_counts$Timepoint <- factor(
+  actino_counts$Timepoint,
+  levels = c("Pre_inoculation", "1_week_post_inoculation", "Harvest")
+)
+
+# Colors
+TANK_COLORS <- c("Control" = "#F28E2B", "Inoculated" = "#4E79A7")
+
+# 3) Plot: mean ± SE bars + individual points
+ggplot(actino_counts, aes(x = Timepoint, y = Actino_Reads, fill = Tank_Type)) +
+  stat_summary(fun = mean, geom = "bar", position = position_dodge(width = 0.75), width = 0.65) +
+  stat_summary(fun.data = mean_se, geom = "errorbar",
+               position = position_dodge(width = 0.75), width = 0.2) +
+  geom_point(aes(color = Tank_Type),
+             position = position_jitterdodge(jitter.width = 0.08, dodge.width = 0.75),
+             size = 2, alpha = 0.85) +
+  scale_fill_manual(values = TANK_COLORS) +
+  scale_color_manual(values = TANK_COLORS) +
+  theme_bw() +
+  labs(
+    title = "Actinobacteria absolute abundance (read counts) in sponge samples",
+    x = "Timepoint",
+    y = "Actinobacteria read counts",
+    fill = "Tank Type",
+    color = "Tank Type"
+  )
+
+PS_actino_g <- tax_glom(PS_actino, taxrank = "Genus", NArm = FALSE)
+
+
+PS_actino_rel <- transform_sample_counts(
+  PS_actino_g,
+  function(x) x / sum(x)
+)
+
+top20_genera <- names(
+  sort(taxa_sums(PS_actino_rel), decreasing = TRUE)
+)[1:20]
+
+PS_actino_top20 <- prune_taxa(top20_genera, PS_actino_rel)
+
+
+library(dplyr)
+library(ggplot2)
+
+df_actino <- psmelt(PS_actino_top20)
+
+# Clean genus names
+df_actino$Genus <- as.character(df_actino$Genus)
+df_actino$Genus[df_actino$Genus == "" | is.na(df_actino$Genus)] <- "Unassigned"
+
+# Enforce biological time order
+df_actino$Timepoint <- factor(
+  df_actino$Timepoint,
+  levels = c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )
+)
+
+df_actino_sum <- df_actino %>%
+  group_by(Timepoint, Genus) %>%
+  summarise(
+    Mean_RA = mean(Abundance),
+    .groups = "drop"
+  )
+
+ggplot(df_actino_sum, aes(x = Genus, y = Mean_RA, fill = Timepoint)) +
+  geom_col(position = "dodge") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Top 20 Actinobacteria genera (relative abundance, sponge samples)",
+    x = "Genus",
+    y = "Mean relative abundance",
+    fill = "Timepoint"
+  )
+
 
 
