@@ -69,7 +69,11 @@ ggplot(rare_df, aes(x = Depth, y = Observed, group = SampleID, color = Sample_Ty
 
 
 PS_16S_Sponge <- subset_samples(PS_16S,Sample_Type == "Sponge")
+PS_16S_Leaf <- subset_samples(PS_16S,Sample_Type == "Leaf")
 
+meta_leaf <- sample_data(PS_16S_Leaf)
+
+meta_sponge <- sample_data(PS_16S_Sponge)
 
 PS_16S_Existing <- subset_samples(PS_16S,Tank_Type == "Existing_tank")
 
@@ -134,14 +138,6 @@ read_depth_all <- data.frame(
   Timepoint = sample_data(PS_16S)$Timepoint
 )
 
-# Sort by Reads (ascending)
-read_depth_all <- read_depth_all[order(read_depth_all$Reads), ]
-
-# Force ggplot to respect this order
-read_depth_all$Sample <- factor(
-  read_depth_all$Sample,
-  levels = read_depth_all$Sample
-)
 
 # Plot
 
@@ -199,6 +195,72 @@ ggplot(read_depth_df, aes(x = Timepoint, y = Reads, fill = Sample_Type)) +
   )+
   scale_y_continuous(labels = scales::comma)
 
+library(dplyr)
+
+read_depth_summary <- read_depth_df %>%
+  group_by(Timepoint, Sample_Type) %>%
+  summarise(
+    mean_reads = mean(Reads),
+    sd_reads   = sd(Reads),
+    .groups = "drop"
+  )
+
+
+ggplot(read_depth_summary, aes(x = Timepoint, y = mean_reads, fill = Sample_Type)) +
+  geom_col(position = position_dodge(width = 0.7)) +
+  geom_errorbar(
+    aes(
+      ymin = mean_reads - sd_reads,
+      ymax = mean_reads + sd_reads
+    ),
+    width = 0.2,
+    position = position_dodge(width = 0.7)
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Leaf" = "#028A0F",
+      "Sponge" = "#02A3D3"
+    )
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Read depth across timepoints (pre-filtering)",
+    x = "Timepoint",
+    y = "Read depth",
+    fill = "Sample Type"
+  ) +
+  scale_y_continuous(labels = scales::comma)
+
+
+
+ggplot(read_depth_df, aes(x = Timepoint, y = Reads, color = Sample_Type)) +
+  geom_boxplot(
+    outlier.shape = NA,
+    alpha = 0.4,
+    position = position_dodge(width = 0.7)
+  ) +
+  geom_jitter(
+    position = position_jitterdodge(
+      jitter.width = 0.15,
+      dodge.width = 0.7
+    ),
+    alpha = 0.8,
+    size = 2
+  ) +
+  scale_color_manual(
+    values = c(
+      "Leaf" = "#028A0F",
+      "Sponge" = "#02A3D3"
+    )
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Per-sample read depth by timepoint",
+    x = "Timepoint",
+    y = "Read depth",
+    color = "Sample Type"
+  ) +
+  scale_y_continuous(labels = scales::comma)
 
 
 library(phyloseq)

@@ -59,6 +59,10 @@ p_obs <- ggplot(alpha_df, aes(x = Tank_Type, y = Observed, fill = Tank_Type)) +
   theme(legend.position = "none") +
   labs(title = "Observed ASVs (rarefied sponge samples)", x = NULL, y = "Observed")
 
+
+p_obs
+
+
 p_sha <- ggplot(alpha_df, aes(x = Tank_Type, y = Shannon, fill = Tank_Type)) +
   geom_boxplot() +
   geom_jitter(width = 0.15, alpha = 0.7, size = 2) +
