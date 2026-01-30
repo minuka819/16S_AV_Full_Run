@@ -426,3 +426,1093 @@ adonis_tank
 
 anova(betadisper(jaccard_dist, meta_df$Tank_Type))
 
+
+###############################################################################
+# Phylum-level relative abundance with Streptomyces highlighted
+#
+# Purpose:
+#   - Visualize the relative abundance of Actinobacteriota across timepoints
+#   - Highlight Streptomyces as a distinct slice
+#   - Group remaining Actinobacteriota together
+#   - Collapse all other taxa (including NA taxonomy) into "Other"
+#   - Uses NON-rarefied data (appropriate for relative abundance)
+#
+# Input:
+#   - PS_16S_no_control (phyloseq object)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+
+# 1) Transform counts to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  PS_sponge_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Define plotting groups
+rel_df <- rel_df %>%
+  mutate(
+    Plot_Group = case_when(
+      Phylum == "Actinobacteriota" & Genus == "Streptomyces" ~ "Streptomyces",
+      Phylum == "Actinobacteriota" ~ "Other_Actinobacteriota",
+      TRUE ~ "Other"
+    )
+  )
+
+# 4) Keep target timepoints and enforce order
+rel_df <- rel_df %>%
+  filter(Timepoint %in% c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )) %>%
+  mutate(
+    Timepoint = factor(
+      Timepoint,
+      levels = c(
+        "Pre_inoculation",
+        "1_week_post_inoculation",
+        "Harvest"
+      )
+    )
+  )
+
+# 5) Aggregate and re-normalize within each timepoint
+pie_df <- rel_df %>%
+  group_by(Timepoint, Plot_Group) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 6) Plot pie charts
+ggplot(pie_df, aes(x = "", y = Abundance, fill = Plot_Group)) +
+  geom_col(width = 1, color = "black") +
+  coord_polar(theta = "y") +
+  facet_wrap(~ Timepoint) +
+  scale_fill_manual(
+    values = c(
+      "Streptomyces" = "#0072B2",
+      "Other_Actinobacteriota" = "#D55E00",
+      "Other" = "grey80"
+    )
+  ) +
+  theme_void(base_size = 13) +
+  labs(
+    title = "Relative abundance of Actinobacteriota and Streptomyces across timepoints",
+    fill = NULL
+  )
+
+
+###############################################################################
+# Phylum-level relative abundance across timepoints (pie charts)
+#
+# Purpose:
+#   - Visualize overall microbial community composition at the phylum level
+#   - One pie chart per timepoint (Pre, Post, Harvest)
+#   - Uses NON-rarefied data (appropriate for relative abundance)
+#
+# Input:
+#   - PS_16S_no_control (phyloseq object)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(colorspace)
+
+# 1) Transform counts to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Keep target timepoints and enforce order
+rel_df <- rel_df %>%
+  filter(Timepoint %in% c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )) %>%
+  mutate(
+    Timepoint = factor(
+      Timepoint,
+      levels = c(
+        "Pre_inoculation",
+        "1_week_post_inoculation",
+        "Harvest"
+      )
+    ),
+    Phylum = ifelse(is.na(Phylum), "Unclassified", Phylum)
+  )
+
+# 4) Aggregate and re-normalize within each timepoint
+pie_df <- rel_df %>%
+  group_by(Timepoint, Phylum) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 5) Generate scalable qualitative colors
+library(colorspace)
+
+# Order phyla by overall abundance (most abundant first)
+phylum_order <- pie_df %>%
+  group_by(Phylum) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Phylum)
+
+pie_df$Phylum <- factor(pie_df$Phylum, levels = phylum_order)
+
+# Generate maximally distinct colors
+phylum_colors <- setNames(
+  qualitative_hcl(
+    n = length(phylum_order),
+    palette = "Glasbey"
+  ),
+  phylum_order
+)
+
+# 6) Plot pie charts
+ggplot(pie_df, aes(x = "", y = Abundance, fill = Phylum)) +
+  geom_col(width = 1, color = "black", linewidth = 0.2) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ Timepoint) +
+  scale_fill_manual(values = phylum_colors) +
+  theme_void(base_size = 13) +
+  labs(
+    title = "Phylum-level composition of sponge microbiomes across timepoints",
+    fill = "Phylum"
+  )
+
+
+viewtax_table(PS_sponge_no_control)
+
+sample_data(PS_sponge_no_control)
+
+sample_sums(PS_sponge_no_control)
+
+PS_sponge_no_control <- subset_samples(PS_sponge,Sample_Number != "73")
+
+tax_df_PS_sponge_no_control <- as.data.frame(tax_table(PS_sponge_no_control))
+
+Ps_sponge_no_euk_no_control <- subset_taxa(PS_sponge_no_control,Kingdom !="d__Eukaryota" )
+
+
+
+###############################################################################
+# Genus-level relative abundance (Top 20 genera + Other)
+#
+# Purpose:
+#   - Visualize genus-level community composition using NON-rarefied data
+#   - Explicitly label unclassified genera (NA → "Unclassified")
+#   - Keep only the top 20 most abundant genera
+#   - Collapse all remaining genera into "Other"
+#   - Maintain consistent genus colors across plots
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, Eukaryota removed)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(colorspace)
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Explicitly label unclassified genus
+rel_df <- rel_df %>%
+  mutate(
+    Genus = ifelse(is.na(Genus), "Unclassified", Genus)
+  )
+
+# 4) Keep only Control vs Inoculated
+rel_df <- rel_df %>%
+  filter(Tank_Type %in% c("Control", "Inoculated"))
+
+# 5) Identify top 20 genera globally
+top20_genera <- rel_df %>%
+  group_by(Genus) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  slice_head(n = 20) %>%
+  pull(Genus)
+
+# 6) Collapse non-top genera into "Other"
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = ifelse(Genus %in% top20_genera, Genus, "Other")
+  )
+
+# 7) Aggregate by Timepoint, Tank_Type, Genus
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 8) Re-normalize within each Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 9) Lock genus order and colors globally
+genus_levels <- rel_df_sum %>%
+  group_by(Genus_plot) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Genus_plot)
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    qualitative_hcl(
+      n = length(genus_levels) - 1,
+      palette = "Glasbey"
+    ),
+    setdiff(genus_levels, "Other")
+  ),
+  "Other" = "grey80"
+)
+
+# ---- rel_df_sum is now ready for plotting ----
+
+
+
+ggplot(
+  filter(rel_df_sum, Timepoint == "Pre_inoculation"),
+  aes(x = Tank_Type, y = Abundance, fill = Genus_plot)
+) +
+  geom_col(color = "black", linewidth = 0.15) +
+  scale_fill_manual(values = genus_colors) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Pre-inoculation",
+    x = NULL,
+    y = "Relative abundance",
+    fill = "Genus"
+  )
+
+
+ggplot(
+  filter(rel_df_sum, Timepoint == "1_week_post_inoculation"),
+  aes(x = Tank_Type, y = Abundance, fill = Genus_plot)
+) +
+  geom_col(color = "black", linewidth = 0.15) +
+  scale_fill_manual(values = genus_colors) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Pre-inoculation",
+    x = NULL,
+    y = "Relative abundance",
+    fill = "Genus"
+  )
+
+
+ggplot(
+  filter(rel_df_sum, Timepoint == "Harvest"),
+  aes(x = Tank_Type, y = Abundance, fill = Genus_plot)
+) +
+  geom_col(color = "black", linewidth = 0.15) +
+  scale_fill_manual(values = genus_colors) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Pre-inoculation",
+    x = NULL,
+    y = "Relative abundance",
+    fill = "Genus"
+  )
+
+length(unique(rel_df$Genus))
+
+rel_df %>%
+  group_by(Genus) %>%
+  summarise(total = sum(Abundance)) %>%
+  arrange(desc(total)) %>%
+  head(30)
+
+
+
+###############################################################################
+# Genus-level relative abundance (Top 15 genera + Other)
+#
+# Purpose:
+#   - Visualize genus-level community composition using NON-rarefied data
+#   - Keep top 15 genera globally
+#   - Collapse remaining genera into "Other"
+#   - Maintain consistent genus colors across plots
+#   - Generate three plots:
+#       1) Pre-inoculation (Control vs Inoculated)
+#       2) Post-inoculation (Control vs Inoculated)
+#       3) Harvest (Control vs Inoculated vs Existing_tank)
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, Eukaryota removed)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(colorspace)
+library(Polychrome)
+
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+#3) Label unclassified genera explicitly
+rel_df <- rel_df %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
+
+# 4) Identify top 15 genera globally
+top15_genera <- rel_df %>%
+  group_by(Genus) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  slice_head(n = 30) %>%
+  pull(Genus)
+
+# 5) Collapse non-top genera into "Other"
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = ifelse(Genus %in% top15_genera, Genus, "Other")
+  )
+
+# 6) Aggregate by Timepoint, Tank_Type, Genus
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 7) Re-normalize within each Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 8) Lock genus order and colors globally
+genus_levels <- rel_df_sum %>%
+  group_by(Genus_plot) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Genus_plot)
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+# Create Glasbey-style colors for genera
+genus_colors <- c(
+  setNames(
+    createPalette(
+      length(genus_levels) - 1,
+      c("#000000", "#FFFFFF")  # seed colors to maximize contrast
+    ),
+    setdiff(genus_levels, "Other")
+  ),
+  "Other" = "grey80"
+)
+
+
+# 9) Plotting function
+plot_timepoint <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = Tank_Type, y = Abundance, fill = Genus_plot)
+  ) +
+    geom_col(color = "black", linewidth = 0.15) +
+    scale_fill_manual(values = genus_colors) +
+    theme_bw(base_size = 13) +
+    labs(
+      title = title_text,
+      x = NULL,
+      y = "Relative abundance",
+      fill = "Genus"
+    )
+}
+
+# 10) Generate plots
+p_pre <- plot_timepoint(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+# Display plots
+p_pre
+p_post
+p_harvest
+
+
+library(patchwork)
+
+(p_pre + p_post + p_harvest) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+sort(unique(rel_df_sum$Genus_plot))
+sort(names(genus_colors))
+
+setdiff(
+  unique(rel_df_sum$Genus_plot),
+  names(genus_colors)
+)
+
+
+###############################################################################
+# Genus-level relative abundance using cumulative abundance cutoff (90%)
+#
+# Purpose:
+#   - Visualize genus-level community composition using NON-rarefied data
+#   - Retain as many genera as needed to explain 90% of total abundance
+#   - Collapse remaining low-abundance genera into "Other"
+#   - Maintain consistent genus colors across plots
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, Eukaryota removed)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Label unclassified genera explicitly
+rel_df <- rel_df %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
+
+# 4) Compute global genus abundance
+genus_abundance <- rel_df %>%
+  group_by(Genus) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  mutate(
+    cumulative_abundance = cumsum(total_abundance) / sum(total_abundance)
+  )
+
+# 5) Select genera up to 90% cumulative abundance
+keep_genera <- genus_abundance %>%
+  filter(cumulative_abundance <= 0.90) %>%
+  pull(Genus)
+
+# Ensure Unclassified is kept if abundant
+keep_genera <- union(keep_genera, "Unclassified")
+
+# 6) Collapse remaining genera into "Other"
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = ifelse(Genus %in% keep_genera, Genus, "Other")
+  )
+
+# 7) Aggregate by Timepoint and Tank_Type
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 8) Re-normalize within each Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 9) Lock genus order and colors globally
+genus_levels <- rel_df_sum %>%
+  group_by(Genus_plot) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Genus_plot)
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    createPalette(
+      length(genus_levels) - 1,
+      c("#000000", "#FFFFFF")
+    ),
+    setdiff(genus_levels, "Other")
+  ),
+  "Other" = "grey80"
+)
+
+length(keep_genera)
+
+keep_genera
+
+###############################################################################
+# Genus-level relative abundance with biologically meaningful "Other" groups
+#
+# Purpose:
+#   - Visualize genus-level community composition using NON-rarefied data
+#   - Avoid a single dominant "Other" category
+#   - Split low-abundance genera into phylum-aware groups
+#   - Maintain consistent colors across all plots
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, Eukaryota removed)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Label unclassified genus
+rel_df <- rel_df %>%
+  mutate(
+    Genus = ifelse(is.na(Genus), "Unclassified", Genus)
+  )
+
+# 4) Define plotting groups (genus + phylum-aware Others)
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = case_when(
+      Genus == "Unclassified" ~ "Unclassified",
+      Phylum == "Actinobacteriota" ~ paste0("Other Actinobacteriota"),
+      Phylum == "Proteobacteria" ~ paste0("Other Proteobacteria"),
+      Phylum == "Firmicutes" ~ paste0("Other Firmicutes"),
+      TRUE ~ "Other (remaining phyla)"
+    )
+  )
+
+# Keep named genera separate
+named_genera <- unique(rel_df$Genus)
+rel_df$Genus_plot[rel_df$Genus %in% named_genera] <- rel_df$Genus[rel_df$Genus %in% named_genera]
+
+# 5) Aggregate
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 6) Re-normalize within Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 7) Lock order and colors
+genus_levels <- rel_df_sum %>%
+  group_by(Genus_plot) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Genus_plot)
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- setNames(
+  createPalette(length(genus_levels), c("#000000", "#FFFFFF")),
+  genus_levels
+)
+
+
+###############################################################################
+# Relative abundance of selected genera across timepoints
+#
+# Purpose:
+#   - Highlight specific genera of interest
+#   - Compare Control vs Inoculated across Pre and Post timepoints
+#   - Include Existing tank at Harvest
+#   - Collapse all non-target genera into "Other"
+#   - Ensure relative abundances sum to 100%
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, NON-rarefied)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+
+# Genera of interest
+genera_of_interest <- c(
+  "Azospirillum",
+  "Pseudomonas",
+  "Bacillus",
+  "Paenibacillus",
+  "Pantoea",
+  "Enterobacter",
+  "Aeromonas",
+  "Klebsiella",
+  "Ralstonia"
+)
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Handle unclassified genus
+rel_df <- rel_df %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
+
+# 4) Define plotting groups: genera of interest vs Other
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = ifelse(
+      Genus %in% genera_of_interest,
+      Genus,
+      "Other"
+    )
+  )
+
+# 5) Aggregate by Timepoint, Tank_Type, Genus_plot
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 6) Re-normalize within each Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 7) Lock factor order and colors
+genus_levels <- c(genera_of_interest, "Other")
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    createPalette(length(genera_of_interest), c("#000000", "#FFFFFF")),
+    genera_of_interest
+  ),
+  "Other" = "grey80"
+)
+
+# 8) Plotting function
+plot_timepoint <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = Tank_Type, y = Abundance, fill = Genus_plot)
+  ) +
+    geom_col(color = "black", linewidth = 0.15) +
+    scale_fill_manual(values = genus_colors) +
+    theme_bw(base_size = 13) +
+    labs(
+      title = title_text,
+      x = NULL,
+      y = "Relative abundance",
+      fill = "Genus"
+    )
+}
+
+# 9) Generate plots
+p_pre <- plot_timepoint(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+# Display plots
+p_pre
+p_post
+p_harvest
+
+
+
+###############################################################################
+# Pie charts of selected genera across timepoints
+#
+# Purpose:
+#   - Highlight selected genera of interest
+#   - Compare Control vs Inoculated (Pre, Post)
+#   - Include Existing tank at Harvest
+#   - Collapse all non-target genera into "Other"
+#   - Ensure relative abundances sum to 100%
+#
+# Input:
+#   - PS_sponge_no_euk (phyloseq object, NON-rarefied)
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+
+# Genera of interest
+genera_of_interest <- c(
+  "Azospirillum",
+  "Pseudomonas",
+  "Bacillus",
+  "Paenibacillus",
+  "Pantoea",
+  "Enterobacter",
+  "Aeromonas",
+  "Klebsiella",
+  "Ralstonia"
+)
+
+# 1) Transform to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Handle unclassified genus
+rel_df <- rel_df %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
+
+# 4) Define plotting groups
+rel_df <- rel_df %>%
+  mutate(
+    Genus_plot = ifelse(
+      Genus %in% genera_of_interest,
+      Genus,
+      "Other"
+    )
+  )
+
+# 5) Aggregate
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 6) Re-normalize within each Timepoint × Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 7) Lock levels and colors
+genus_levels <- c(genera_of_interest, "Other")
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    createPalette(length(genera_of_interest), c("#000000", "#FFFFFF")),
+    genera_of_interest
+  ),
+  "Other" = "grey80"
+)
+
+# 8) Pie plotting function
+plot_timepoint_pie <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = "", y = Abundance, fill = Genus_plot)
+  ) +
+    geom_col(width = 1, color = "black", linewidth = 0.2) +
+    coord_polar(theta = "y") +
+    facet_wrap(~ Tank_Type) +
+    scale_fill_manual(values = genus_colors) +
+    theme_void(base_size = 13) +
+    labs(
+      title = title_text,
+      fill = "Genus"
+    )
+}
+
+# 9) Generate pie charts
+p_pre <- plot_timepoint_pie(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint_pie(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint_pie(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+# Display plots
+p_pre
+p_post
+p_harvest
+
+(p_pre + p_post + p_harvest) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+
+
+###############################################################################
+# Bar charts of selected genera (plus Other) across timepoints
+#
+# Purpose:
+#   - Compare relative abundance of genera of interest between treatments
+#   - Display each genus explicitly on the x-axis (including "Other")
+#   - Use non-stacked bars for clear comparison
+#   - Maintain identical coloring across all figures
+#
+# Input:
+#   - rel_df_sum (from genera-of-interest workflow)
+#   - genus_colors (predefined, reused palette)
+###############################################################################
+
+library(tidyverse)
+
+# Ensure factor order is consistent
+rel_df_sum$Genus_plot <- factor(
+  rel_df_sum$Genus_plot,
+  levels = names(genus_colors)
+)
+
+# Plotting function
+plot_timepoint_bar <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = Genus_plot, y = Abundance, fill = Genus_plot)
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      color = "black",
+      linewidth = 0.2
+    ) +
+    facet_wrap(~ Tank_Type) +
+    scale_fill_manual(values = genus_colors) +
+    theme_bw(base_size = 13) +
+    labs(
+      title = title_text,
+      x = "Genus",
+      y = "Relative abundance"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+}
+
+# Generate plots
+p_pre <- plot_timepoint_bar(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint_bar(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint_bar(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+# Display
+p_pre
+p_post
+p_harvest
+
+(p_pre + p_post + p_harvest) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+
+
+
+###############################################################################
+# Non-stacked bar charts of selected genera (plus Other) across timepoints
+#
+# - NON-rarefied data
+# - Genera of interest shown explicitly
+# - All other genera collapsed into "Other"
+# - Percent labels above bars
+# - Fixed y-axis (0–100%) across all plots
+# - Consistent coloring across figures
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+library(scales)
+
+# ----------------------------
+# Genera of interest
+# ----------------------------
+genera_of_interest <- c(
+  "Azospirillum",
+  "Pseudomonas",
+  "Bacillus",
+  "Paenibacillus",
+  "Pantoea",
+  "Enterobacter",
+  "Aeromonas",
+  "Klebsiella",
+  "Ralstonia"
+)
+
+# ----------------------------
+# Relative abundance transform
+# ----------------------------
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# ----------------------------
+# Melt + clean taxonomy
+# ----------------------------
+rel_df <- psmelt(ps_rel) %>%
+  mutate(
+    Genus = ifelse(is.na(Genus), "Unclassified", Genus),
+    Genus_plot = ifelse(Genus %in% genera_of_interest, Genus, "Other")
+  )
+
+# ----------------------------
+# Aggregate + renormalize
+# ----------------------------
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# ----------------------------
+# Factor order + colors
+# ----------------------------
+genus_levels <- c(genera_of_interest, "Other")
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    createPalette(length(genera_of_interest), c("#000000", "#FFFFFF")),
+    genera_of_interest
+  ),
+  "Other" = "grey80"
+)
+
+# Explicitly recolor Pseudomonas (avoid grey conflict)
+genus_colors["Pseudomonas"] <- "#1F78B4"
+
+# ----------------------------
+# Plotting function
+# ----------------------------
+plot_timepoint_bar <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = Genus_plot, y = Abundance, fill = Genus_plot)
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      color = "black",
+      linewidth = 0.2
+    ) +
+    geom_text(
+      aes(label = percent(Abundance, accuracy = 1)),
+      vjust = -0.3,
+      size = 3
+    ) +
+    facet_wrap(~ Tank_Type) +
+    scale_fill_manual(values = genus_colors) +
+    scale_y_continuous(
+      limits = c(0, 1),
+      labels = scales::percent_format(accuracy = 1)
+    ) +
+    theme_bw(base_size = 13) +
+    labs(
+      title = title_text,
+      x = "Genus",
+      y = "Relative abundance (%)"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+}
+
+# ----------------------------
+# Generate plots
+# ----------------------------
+p_pre <- plot_timepoint_bar(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint_bar(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint_bar(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+# Display
+p_pre
+p_post
+p_harvest
+
+
+(p_pre + p_post + p_harvest) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
