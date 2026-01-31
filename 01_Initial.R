@@ -31,8 +31,11 @@ PS_16S<-qza_to_phyloseq(
  metadata="C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\inputs\\metadata_clean.tsv"
 )
 
+rep_seqs <- read_qza(
+  "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\repseqs_16S.qza"
+)$data
 
-PS_16S
+refseq(PS_16S) <- rep_seqs
 
 # 1️⃣ Extract OTU table
 otu <- as(otu_table(PS_16S), "matrix")
