@@ -71,6 +71,71 @@ ggplot(rel_df_sum, aes(x = Sample_Type, y = Abundance, fill = Genus)) +
   )
 
 
+##ADJUSTED TO RELFECT INDIVIDUAL SAMPLES 
+
+# 1) Transform to relative abundance
+PS_rel <- transform_sample_counts(
+  PS_16S,
+  function(x) x / sum(x)
+)
+
+# 2) Identify top 50 taxa globally (you commented top 30 but used 50)
+top_taxa <- names(sort(taxa_sums(PS_rel), decreasing = TRUE))[1:50]
+
+# 3) Prune phyloseq object to top taxa only
+PS_rel_top <- prune_taxa(top_taxa, PS_rel)
+
+# 4) Melt to long format
+rel_df <- psmelt(PS_rel_top)
+
+# OPTIONAL: make sure Genus NA is labeled
+rel_df$Genus <- ifelse(is.na(rel_df$Genus), "Unclassified", rel_df$Genus)
+
+# 5) Aggregate within *individual samples* (NOT Sample_Type)
+rel_df_sum <- rel_df %>%
+  group_by(Sample, Sample_Type, Genus) %>%   # <-- key change
+  summarise(Abundance = sum(Abundance), .groups = "drop")
+
+# 6) Re-normalize so each *sample* sums to 1
+rel_df_sum <- rel_df_sum %>%
+  group_by(Sample) %>%                       # <-- key change
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 7) Colors
+n_taxa <- length(unique(rel_df_sum$Genus))
+distinct_colors <- palette36.colors(n_taxa)
+names(distinct_colors) <- unique(rel_df_sum$Genus)
+
+# 8) Plot (individual samples on x-axis)
+ggplot(rel_df_sum, aes(x = Sample, y = Abundance, fill = Genus)) +
+  geom_bar(
+    stat = "identity",
+    color = "black",
+    linewidth = 0.15
+  ) +
+  facet_grid(
+    ~ Sample_Type,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_fill_manual(values = distinct_colors) +
+  theme_bw(base_size = 13) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = "bottom",
+    legend.box = "horizontal"
+  ) +
+  labs(
+    title = "Relative abundance of top taxa by sample",
+    x = NULL,
+    y = "Relative abundance",
+    fill = "Genus"
+  )
+
+
+
 ###############################################################################
 # Alpha diversity (Observed ASVs) comparison: Leaf vs Sponge
 #
@@ -299,13 +364,13 @@ ps_pa <- transform_sample_counts(
 
 # 2) Compute Jaccard distance
 jaccard_dist <- phyloseq::distance(
-  ps_sponge_rarefied_no_control,
+  PS_sponge_rarefied,
   method = "jaccard"
 )
 
 # 3) PCoA ordination
 ord_jaccard <- ordinate(
-  ps_sponge_rarefied_no_control,
+  PS_sponge_rarefied,
   method = "PCoA",
   distance = jaccard_dist
 )
@@ -320,7 +385,7 @@ ord_df <- plot_ordination(
 # 5) PCoA plot with confidence ellipses
 p <- ggplot(
   ord_df,
-  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+  aes(x = Axis.1, y = Axis.2, color = Tank_Type)
 ) +
   geom_point(size = 3, alpha = 0.9) +
   stat_ellipse(
@@ -338,6 +403,7 @@ p <- ggplot(
   )
 
 p
+
 
 meta_df <- data.frame(sample_data(ps_sponge_rarefied_no_control))
 
@@ -606,6 +672,119 @@ tax_df_PS_sponge_no_control <- as.data.frame(tax_table(PS_sponge_no_control))
 
 Ps_sponge_no_euk_no_control <- subset_taxa(PS_sponge_no_control,Kingdom !="d__Eukaryota" )
 
+
+
+
+library(phyloseq)
+library(tidyverse)
+library(colorspace)
+
+# 1) Transform counts to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Keep target timepoints and clean taxonomy
+rel_df <- rel_df %>%
+  filter(Timepoint %in% c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )) %>%
+  mutate(
+    Timepoint = factor(
+      Timepoint,
+      levels = c(
+        "Pre_inoculation",
+        "1_week_post_inoculation",
+        "Harvest"
+      )
+    ),
+    Phylum = ifelse(is.na(Phylum), "Unclassified", Phylum)
+  )
+
+# 4) Aggregate by Timepoint × Tank_Type × Phylum
+pie_df <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Phylum) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 5) Order phyla globally for consistent colors
+phylum_order <- pie_df %>%
+  group_by(Phylum) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Phylum)
+
+pie_df <- pie_df %>%
+  mutate(
+    Tank_Type = factor(
+      Tank_Type,
+      levels = c(
+        "Control",
+        "Inoculated",
+        "Existing_tank"
+      )
+    )
+  )
+
+phylum_colors <- setNames(
+  qualitative_hcl(
+    n = length(phylum_order),
+    palette = "Dynamic"   # use Dynamic; Glasbey not valid here
+  ),
+  phylum_order
+)
+
+library(Polychrome)
+
+phylum_colors <- setNames(
+  createPalette(
+    length(levels(pie_df$Phylum)),
+    c("#000000", "#FFFFFF")
+  ),
+  levels(pie_df$Phylum)
+)
+
+
+ggplot(pie_df, aes(x = "", y = Abundance, fill = Phylum)) +
+  geom_col(width = 1.1, color = "black", linewidth = 0.2) +
+  coord_polar(theta = "y") +
+  facet_grid(
+    Tank_Type ~ Timepoint,
+    drop = TRUE,
+    switch = "y"
+  ) +
+  scale_fill_manual(values = phylum_colors) +
+  theme_void(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    
+    strip.text.x = element_text(face = "bold", size = 13),
+    strip.text.y = element_text(face = "bold", size = 13),
+    strip.placement = "outside",
+    
+    panel.spacing.x = unit(2.2, "lines"),
+    panel.spacing.y = unit(1.8, "lines"),
+    
+    plot.margin = margin(20, 20, 20, 20)
+  ) +
+  labs(fill = "Phylum")
+
+
+ggsave(
+  "phylum_pies_by_time_and_tank.png",
+  width = 14,
+  height = 8,
+  dpi = 600
+)
 
 
 ###############################################################################
