@@ -1,6 +1,76 @@
+### --- CHAPTER 1 --- ###
+
+### --- INITIAL QC AND INVESTIGATIONS --- ###
+# Helper function: install and load required packages automatically
+load_packages <- function(pkg_list) {
+  to_install <- pkg_list[!pkg_list %in% installed.packages()[, "Package"]]
+  if (length(to_install)) install.packages(to_install, dependencies = TRUE)
+  invisible(lapply(pkg_list, library, character.only = TRUE))
+}
+
+# List of packages commonly used for QIIME2 + Phyloseq analysis
+packages <- c(
+  "qiime2R",      # Import QIIME2 artifacts (.qza/.qzv)
+  "phyloseq",     # Microbiome data handling
+  "tidyverse",    # Data manipulation (dplyr, ggplot2, etc.)
+  "vegan",        # Diversity metrics and ordination
+  "microbiome",   # Extra microbiome analysis tools
+  "RColorBrewer", # Color palettes
+  "plotly",        # Interactive plots (optional)
+  "patchwork"
+)
+
+# Load (and install if missing)
+load_packages(packages)
+
+PS_16S<-qza_to_phyloseq(
+  features="C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\table_16S.qza",
+  taxonomy="C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\taxonomy_16S_silva138_99.qza",
+  metadata="C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\inputs\\metadata_clean.tsv"
+)
+
+rep_seqs <- read_qza(
+  "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\repseqs_16S.qza"
+)$data
+
+# Extract OTU table
+otu <- as(otu_table(PS_16S), "matrix")
+if (taxa_are_rows(PS_16S)) otu <- t(otu)
+
+#Get metadata 
+meta <- as(sample_data(PS_16S), "data.frame") %>%
+  tibble::rownames_to_column("SampleID")
 
 
-### RELATIVE ABUNDANCE PLOTS 
+
+get_curve <- function(counts, sample_id) {
+  depths <- seq(100, sum(counts), length.out = 50)   # avoid 0 to prevent rarefy issues
+  observed <- sapply(depths, function(d) {
+    rarefy(rbind(counts), sample = d, se = FALSE)
+  })
+  data.frame(SampleID = sample_id, Depth = depths, Observed = observed)
+}
+
+rare_df <- map_dfr(rownames(otu), ~get_curve(otu[.x, ], .x))
+
+rare_df <- left_join(rare_df, meta, by = "SampleID")
+
+ggplot(rare_df, aes(x = Depth, y = Observed, group = SampleID, color = Sample_Type)) +
+  geom_line(alpha = 0.8, linewidth = 1) +
+  facet_wrap(~ Sample_Type, scales = "free_x") +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Rarefaction Curves by Sample Type",
+    x = "Sequencing depth (reads)",
+    y = "Observed Features",
+    color = "Sample Type"
+  ) +
+  scale_color_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")) +
+  scale_x_continuous(labels = scales::comma)
+
+
+
+### --- RELATIVE ABUNDANCE PLOTS --- ###
 
 ###############################################################################
 # Relative abundance plot by Sample_Type (Top 30 taxa, no collapsing)

@@ -1,0 +1,1884 @@
+---
+title: "Avery Farms 16S Analysis - Phase 1"
+author: "Minuka Hewapathirana "
+date: "2026-02-04"
+output: 
+  html_document:
+    css: styles.css
+---
+
+## [1] **Environment setup and data import**
+
+**Purpose**
+This section sets up the R environment and imports QIIME2 artifacts into R for downstream 16S rRNA gene analysis using phyloseq. All data are loaded in their raw (non-rarefied, non-filtered) form to preserve full information for later analytical decisions.
+
+**Input**
+-QIIME2 feature table (.qza)
+-QIIME2 taxonomy assignment (.qza)
+-QIIME2 representative sequences (.qza)
+-Sample metadata file (.tsv)
+
+**Output**
+-PS_16S: a phyloseq object containing ASV counts, taxonomy, and sample metadata
+-rep_seqs: representative DNA sequences for each ASV
+-otu: ASV count matrix with samples as rows
+-meta: tidy sample metadata table with explicit SampleID column
+
+**Notes**
+-No filtering, normalization, or rarefaction is performed at this stage
+-This object represents the full dataset and will be subset for specific analyses later
+-Separating OTU and metadata tables facilitates custom plotting and statistical analyses outside phyloseq
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,        # show code
+  message = FALSE,    # suppress package messages
+  warning = FALSE,    # suppress warnings
+  fig.width = 8,      # default figure width
+  fig.height = 5,     # default figure height
+  dpi = 300           # high-resolution figures
+)
+
+load_packages <- function(pkg_list) {
+  to_install <- pkg_list[!pkg_list %in% installed.packages()[, "Package"]]
+  if (length(to_install)) install.packages(to_install, dependencies = TRUE)
+  invisible(lapply(pkg_list, library, character.only = TRUE))
+}
+
+packages <- c(
+  # QIIME2 + microbiome data structures
+  "qiime2R",
+  "phyloseq",
+  "microbiome",
+
+  # Data manipulation
+  "tidyverse",   # dplyr, ggplot2, tidyr, tibble, purrr, stringr, readr
+
+  # Diversity metrics + stats
+  "vegan",       # adonis2, betadisper, rarefy
+  "ggpubr",      # stat_compare_means
+
+  # Plotting helpers
+  "patchwork",   # combining plots
+  "ggrepel",     # non-overlapping labels
+  "RColorBrewer",
+  "colorspace",
+  "Polychrome",
+  "scales",      # percent(), comma formatting
+
+  # Optional / interactive
+  "plotly"
+)
+
+load_packages(packages)
+
+PS_16S <- qza_to_phyloseq(
+  features = "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\table_16S.qza",
+  taxonomy = "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\taxonomy_16S_silva138_99.qza",
+  metadata = "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\inputs\\metadata_clean.tsv",
+  refseq = "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\repseqs_16S.qza"
+)
+
+rep_seqs <- read_qza(
+  "C:\\Users\\mhewapat\\Documents\\avery_Farms\\16S_full_run\\results\\artifacts\\repseqs_16S.qza"
+)$data
+
+otu <- as(otu_table(PS_16S), "matrix")
+if (taxa_are_rows(PS_16S)) otu <- t(otu)
+
+meta <- as(sample_data(PS_16S), "data.frame") %>%
+  tibble::rownames_to_column("SampleID")
+
+```
+
+## [2] **Rarefaction curves by sample type**
+
+**Purpose**
+This section evaluates whether sequencing depth was sufficient to capture microbial diversity within each sample. Rarefaction curves are used to assess how the number of observed features (ASVs) increases as a function of sequencing depth and whether curves approach saturation.
+
+**Input**
+-otu: ASV count matrix (samples × features)
+-meta: sample metadata containing SampleID and Sample_Type
+
+**Output**
+-rare_df: long-format data frame containing rarefaction depths and observed feature counts per sample
+-Rarefaction curve plot stratified by sample type
+
+**Notes**
+-Rarefaction is used only for diagnostic purposes here, not for downstream statistical testing
+-Each curve represents repeated subsampling without replacement across increasing depths
+-Curves approaching a plateau indicate sufficient sequencing depth
+-Faceting by sample type allows visual comparison of sequencing effort across groups
+
+```{r Rarefaction curve setup, echo = TRUE, message = FALSE, warning = FALSE}
+
+get_curve <- function(counts, sample_id) {
+  depths <- seq(100, sum(counts), length.out = 50)  # avoid 0 to prevent rarefy issues
+  observed <- sapply(depths, function(d) {
+    rarefy(rbind(counts), sample = d, se = FALSE)
+  })
+  data.frame(
+    SampleID = sample_id,
+    Depth = depths,
+    Observed = observed
+  )
+}
+
+rare_df <- map_dfr(rownames(otu), ~get_curve(otu[.x, ], .x))
+
+rare_df <- left_join(rare_df, meta, by = "SampleID")
+```
+
+- It is possible to run this plot based on several factors that are present in the metadata
+```{r Rarefaction curve plot, echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 5.5, dpi = 300 }
+
+ggplot(
+  rare_df,
+  aes(x = Depth, y = Observed, group = SampleID, color = Sample_Type)
+) +
+  geom_line(alpha = 0.8, linewidth = 1) +
+  facet_wrap(~ Sample_Type, scales = "free_y") +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Rarefaction curves by sample type",
+    x = "Sequencing depth (reads)",
+    y = "Observed ASVs",
+    color = "Sample Type"
+  ) +
+  scale_color_manual(
+    values = c(
+      "Leaf" = "#028A0F",
+      "Sponge" = "#02A3D3"
+    )
+  )
+```
+
+## **[3] Sequencing depth assessment and rarefaction**
+
+### **[3.1] Read depth per sample (pre-filtering)**
+
+**Purpose**
+-To assess sequencing depth across samples and sample types prior to rarefaction. This step identifies low-depth samples that may constrain downstream diversity analyses.
+
+**Input**
+-PS_16S: full phyloseq object containing all samples
+
+**Output**
+-read_depth_PS_no_control: per-sample read depth table
+-Bar plot showing read depth per sample, colored by sample type
+
+**Notes**
+-This step is descriptive and used to guide rarefaction decisions
+-No samples are removed or modified here
+
+```{r Read depth, echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 5.5, dpi = 300}
+
+PS_16S
+
+read_depth_PS_no_control <- data.frame(
+  Sample = sample_names(PS_16S),
+  Reads = sample_sums(PS_16S),
+  Sample_Type = sample_data(PS_16S)$Sample_Type,
+  Timepoint = sample_data(PS_16S)$Timepoint
+)
+
+ggplot(read_depth_PS_no_control, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(
+    values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Read depth per sample",
+    x = "Sample",
+    y = "Read depth",
+    fill = "Sample Type"
+  ) +
+  scale_y_continuous(labels = scales::comma)
+```
+
+### **[3.2] Selection of rarefaction depth**
+
+**Purpose**
+To select a conservative rarefaction depth that retains all samples while minimizing information loss.
+
+**Input**
+-PS_16S_no_control: phyloseq object after control removal
+
+**Output**
+-RARE_DEPTH: chosen rarefaction depth (minimum read depth)
+
+**Notes**
+-The minimum sequencing depth across samples is used
+-This ensures all samples are retained for alpha diversity analysis
+
+```{r Rarefaction selection, echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 5.5, dpi = 300}
+
+depths <- sample_sums(PS_16S)
+
+depths
+
+tapply(depths, sample_data(PS_16S)$Sample_Type, summary)
+tapply(depths, sample_data(PS_16S)$Sample_Type, min)
+
+set.seed(123)
+RARE_DEPTH <- min(depths)
+RARE_DEPTH
+
+```
+
+We want to ideally be closer to the median level which is around 65K but we see one sponge sample is at 7496.
+
+Supposing we did go forward and rarefy to 7496 we will be losing a lot of features in samples that have around 65K. Thus the 7K sample is treated as an outlier and excluded from the analysis. 
+
+Upon closer inspection we identify a sample at 29603 and we can set the rarefaction value at 29000, so that we can maximize the number of samples we move forward with analysis and also not sacrifice the number of ASVs that will be dropped from subsampling efforts.
+
+### **[3.3] Rarefaction of samples to even depth**
+
+**Purpose**
+To normalize sequencing depth across samples for diversity analyses that are sensitive to library size (e.g. alpha diversity).
+
+**Input**
+-PS_16S
+-RARE_DEPTH
+
+**Output**
+-PS_rare: rarefied phyloseq object
+
+**Notes**
+-Rarefaction is applied only for analyses requiring equal depth 
+-Relative abundance and Bray–Curtis analyses use non-rarefied data
+
+```{r Choosing read depth, echo = TRUE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 5.5, dpi = 300}
+
+RARE_DEPTH <- 29600
+
+PS_rare <- rarefy_even_depth(
+  PS_16S,
+  sample.size = RARE_DEPTH,
+  rngseed = 123,
+  replace = FALSE,
+  verbose = FALSE
+)
+
+PS_rare
+
+```
+### **[3.4] Read depth before and after rarefaction**
+
+**Purpose**
+To visually confirm that rarefaction successfully equalized sequencing depth across samples.
+
+**Input**
+-PS_16S
+-PS_rare
+
+**Output**
+-Side-by-side comparison of read depth before and after rarefaction
+
+**Notes**
+-Identical y-axis limits are used to emphasize normalization
+-This plot is diagnostic and not used for inference
+
+```{r Before vs After Read depth }
+
+make_depth_df <- function(ps) {
+  df <- data.frame(
+    Sample = sample_names(ps),
+    Reads = sample_sums(ps),
+    Sample_Type = sample_data(ps)$Sample_Type
+  )
+  df <- df[order(df$Reads), ]
+  df$Sample <- factor(df$Sample, levels = df$Sample)
+  df
+}
+
+ymax <- max(sample_sums(PS_16S))
+
+depth_before <- make_depth_df(PS_16S)
+
+nrow(sample_data(PS_16S))
+
+depth_after  <- make_depth_df(PS_rare)
+
+nrow(sample_data(PS_rare))
+
+plot_read_depth_before <- ggplot(depth_before, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_hline(
+    yintercept = 29600,
+    color = "red",
+    linewidth = 1,
+  ) +
+  geom_col() +
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_cartesian(ylim = c(0, ymax)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Before rarefaction", x = "Sample", y = "Read depth")
+
+plot_read_depth_after <- ggplot(depth_after, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+   geom_hline(
+    yintercept = 29600,
+    color = "red",
+    linewidth = 2,
+  ) +
+  geom_col() +
+  scale_fill_manual(values = c("Leaf" = "#028A0F", "Sponge" = "#02A3D3")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_cartesian(ylim = c(0, ymax)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = paste0("After rarefaction (", RARE_DEPTH, " reads/sample)"),
+    x = "Sample",
+    y = "Read depth"
+  )
+
+arrow_plot <- ggplot() +
+  annotate("text", x = 0.5, y = 0.5, label = "→", size = 20) +
+  theme_void()
+
+plot_read_depth_before + arrow_plot + plot_read_depth_after +
+  plot_layout(widths = c(1, 0.12, 1))
+
+```
+
+## **[4] Alpha diversity analysis**
+
+### **[4.1] Alpha diversity by sample type (rarefied data)**
+
+**Purpose**
+-To compare within-sample (alpha) diversity between sample types using rarefied data, ensuring that differences are not driven by unequal sequencing depth.
+
+**Input**
+-PS_rare: rarefied phyloseq object
+-Sample metadata containing Sample_Type
+
+**Output**
+-alpha_df: data frame containing Observed ASVs and Shannon diversity per sample
+-Side-by-side boxplots for Observed ASVs and Shannon diversity
+-Wilcoxon rank-sum test p-values comparing sample types
+
+**Notes**
+-Alpha diversity metrics are calculated on rarefied data
+-Observed ASVs reflect richness (number of unique ASVs)
+-Shannon diversity reflects both richness and evenness
+-Wilcoxon tests are used due to non-normality and small sample sizes
+-P-values are shown for exploratory comparison, not formal inference
+
+```{r Alpha Diversity Metrics}
+# Calculate alpha diversity metrics
+alpha_df <- estimate_richness(
+  PS_rare,
+  measures = c("Observed", "Shannon")
+)
+
+alpha_df$Sample_Type <- sample_data(PS_rare)$Sample_Type
+
+# Statistical tests
+p_obs <- wilcox.test(Observed ~ Sample_Type, data = alpha_df)$p.value
+p_sha <- wilcox.test(Shannon  ~ Sample_Type, data = alpha_df)$p.value
+
+COLORS <- c(
+  "Leaf"   = "#028A0F",
+  "Sponge" = "#02A3D3"
+)
+
+# Observed ASVs plot
+p1 <- ggplot(alpha_df, aes(x = Sample_Type, y = Observed, fill = Sample_Type)) +
+  geom_boxplot() +
+  scale_fill_manual(values = COLORS) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Observed ASVs", x = NULL, y = "Observed ASVs") +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(alpha_df$Observed) * 1.05,
+    label = paste0("Wilcoxon p = ", formatC(p_obs, format = "e", digits = 2))
+  )
+
+# Shannon diversity plot
+p2 <- ggplot(alpha_df, aes(x = Sample_Type, y = Shannon, fill = Sample_Type)) +
+  geom_boxplot() +
+  scale_fill_manual(values = COLORS) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(title = "Shannon diversity", x = NULL, y = "Shannon") +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(alpha_df$Shannon) * 1.05,
+    label = paste0("Wilcoxon p = ", formatC(p_sha, format = "e", digits = 2))
+  )
+
+# Combine plots
+p1 + p2
+
+
+
+```
+
+## **[5] Host versus bacterial read composition**
+Proportion of host-derived reads by sample type
+
+**Purpose**
+To quantify and visualize the proportion of host-derived reads (chloroplast and mitochondrial sequences) relative to bacterial reads across sample types. This provides a quality-control overview of host contamination and sequencing efficiency.
+
+**Input**
+-PS_16S: full phyloseq object containing ASV counts and taxonomy
+-Taxonomic annotations identifying chloroplast and mitochondrial sequences
+-Sample metadata containing Sample_Type
+
+**Output**
+-host_bact_df: per-sample table of host, bacterial, and total reads
+-pie_df: mean host and bacterial read fractions by sample type
+-Faceted pie charts showing average read composition per sample type
+
+**Notes**
+-Chloroplasts and mitochondria are treated as host-derived sequences
+-Values shown represent mean read counts and fractions, not per-sample totals
+-This analysis is descriptive and intended for QC and interpretation
+-Host reads are not removed at this stage unless explicitly stated elsewhere
+```{r Leaf vs Sponge Host Read analysis}
+
+### - PIE CHARTS - ###
+
+# ---------- Colors ----------
+PIE_COLORS <- c("Host" = "grey70", "Bacterial" = "steelblue")
+
+
+# ---------- Identify host taxa (chloroplast + mitochondria) ----------
+is_chloro <- tax_table(PS_16S)[, "Order"] == "Chloroplast"
+is_mito   <- tax_table(PS_16S)[, "Family"] == "Mitochondria"
+host_ids  <- taxa_names(PS_16S)[(is_chloro | is_mito)]
+
+# ---------- Per-sample host vs bacterial reads ----------
+host_bact_df <- data.frame(
+  Sample      = sample_names(PS_16S),
+  Sample_Type = sample_data(PS_16S)$Sample_Type,
+  Host_Reads  = sample_sums(prune_taxa(host_ids, PS_16S)),
+  Total_Reads = sample_sums(PS_16S)
+) %>%
+  mutate(
+    Bacterial_Reads = Total_Reads - Host_Reads
+  )
+
+# ---------- Mean fractions + mean reads by Sample_Type (for pie charts) ----------
+pie_df <- host_bact_df %>%
+  group_by(Sample_Type) %>%
+  summarise(
+    Host = mean(Host_Reads, na.rm = TRUE),
+    Bacterial = mean(Bacterial_Reads, na.rm = TRUE),
+    Total = mean(Total_Reads, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = c("Host", "Bacterial"),
+               names_to = "Category",
+               values_to = "Reads") %>%
+  mutate(
+    Fraction = Reads / Total,
+    Label = paste0(
+      Category, "\n",
+      format(round(Reads), big.mark = ","), " reads\n(",
+      round(Fraction * 100, 1), "%)"
+    )
+  )
+
+# ---------- Plot ----------
+ggplot(pie_df, aes(x = "", y = Fraction, fill = Category)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_wrap(~ Sample_Type) +
+  geom_text(aes(label = Label), position = position_stack(vjust = 0.5), size = 4) +
+  scale_fill_manual(values = PIE_COLORS) +
+  theme_void() +
+  labs(
+    title = "Host vs bacterial reads by sample type",
+    fill = NULL
+  )
+
+```
+
+
+# **Chapter 2: Sponge-only analysis**
+
+## **[1] Dataset restriction and preprocessing**
+
+Subsetting to sponge samples and removing host-derived taxa
+
+**Purpose**
+To isolate sponge-associated microbial communities by restricting the dataset to sponge samples only and removing host-derived sequences (chloroplasts and mitochondria). This ensures that downstream diversity and composition analyses reflect bacterial communities associated with sponge samples.
+
+**Input**
+-PS_16S_Sponge: phyloseq object containing sponge samples
+-PS_rare: rarefied phyloseq object from Chapter 1
+
+**Output**
+-PS_sponge: non-rarefied sponge-only phyloseq object with host taxa removed
+
+-PS_sponge_rare: rarefied sponge-only phyloseq object for alpha diversity analyses
+
+**Notes**
+-Host-derived taxa are defined as chloroplasts and mitochondria
+-Zero-abundance taxa are removed after each subsetting step
+-Two sponge-specific objects are retained:
+-Non-rarefied (PS_sponge) for relative abundance and Bray–Curtis analyses
+-Rarefied (PS_sponge_rare) for alpha diversity and presence/absence metrics
+
+```{r Subsetting sponge samples}
+
+PS_sponge <- subset_samples(PS_16S, Sample_Type == "Sponge")
+
+# Inspect taxonomy table (optional diagnostic)
+taxa_df_PS_16S_Sponge <- as.data.frame(tax_table(PS_sponge))
+
+nrow(get_taxa(PS_sponge))
+
+# Remove zero-abundance taxa
+PS_sponge <- prune_taxa(
+  taxa_sums(PS_sponge) > 0,
+  PS_sponge
+)
+
+nrow(get_taxa(PS_sponge))
+
+PS_sponge
+
+read_depth_PS_sponge <- data.frame(
+  Sample = sample_names(PS_sponge),
+  Reads = sample_sums(PS_sponge),
+  Sample_Type = sample_data(PS_sponge)$Sample_Type,
+  Timepoint = sample_data(PS_sponge)$Timepoint
+)
+
+nrow(read_depth_PS_sponge)
+
+ggplot(read_depth_PS_sponge, aes(x = Sample, y = Reads, fill = Sample_Type)) +
+  geom_col() +
+  scale_fill_manual(
+    values = c( "Sponge" = "#02A3D3")
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Read depth per sample",
+    x = "Sample",
+    y = "Read depth",
+    fill = "Sample Type"
+  ) +
+  scale_y_continuous(labels = scales::comma)
+
+
+rarefaction_cutoff = 39000
+
+PS_rare_sponge <- rarefy_even_depth(
+  PS_sponge,
+  sample.size = rarefaction_cutoff,
+  rngseed = 123,
+  replace = FALSE,
+  verbose = FALSE
+)
+# we lost one sample here due to low sample depth of 7K
+
+```
+## **[2] Sponge-only alpha diversity**
+### **[2.1] Observed ASV richness across tank types and timepoints (rarefied)**
+
+**Purpose**
+-To assess changes in sponge-associated microbial richness across tank treatments
+-To evaluate temporal changes in richness across experimental timepoints
+
+**Input**
+-PS_rare_sponge rarefied phyloseq object
+-Sample metadata containing Tank_Type and Timepoint
+
+**Output**
+-alpha_df_PS_rare_sponge data frame containing Observed ASV richness and metadata
+-Faceted boxplots of Observed ASVs across tank types and timepoints
+-Wilcoxon rank-sum test p-values for pairwise comparisons
+
+**Notes**
+-Analysis is performed on rarefied data to control for sequencing depth
+-Observed ASVs represent richness only and do not account for evenness
+-Wilcoxon tests are used due to non-normality and small sample sizes
+-Statistical results are exploratory and not intended for formal inference
+-Existing tank samples are only present at the Harvest timepoint
+
+
+```{r Sponge only alpha }
+
+# 1) Calculate Observed ASVs
+alpha_df_PS_rare_sponge <- estimate_richness(
+  PS_rare_sponge,
+  measures = "Observed"
+) %>%
+  tibble::rownames_to_column("Sample")
+
+# 2) Add metadata
+meta_df_PS_rare_sponge <- data.frame(sample_data(PS_rare_sponge)) %>%
+  tibble::rownames_to_column("Sample")
+
+alpha_df_PS_rare_sponge <- left_join(alpha_df_PS_rare_sponge, meta_df_PS_rare_sponge, by = "Sample")
+
+# 3) Keep only Control vs Inoculated and target timepoints
+alpha_df_PS_rare_sponge <- alpha_df_PS_rare_sponge %>%
+  filter(
+    Tank_Type %in% c("Control", "Inoculated", "Existing_tank"),
+    Timepoint %in% c("Pre_inoculation", "1_week_post_inoculation", "Harvest")
+  )
+
+# (Optional) set timepoint order for plotting
+alpha_df_PS_rare_sponge$Timepoint <- factor(
+  alpha_df_PS_rare_sponge$Timepoint,
+  levels = c("Pre_inoculation", "1_week_post_inoculation", "Harvest")
+)
+
+TANK_COLORS <- c(
+  "Existing_tank" = "#7A7A7A",
+  "Control"       = "#F28E2B",
+  "Inoculated"    = "#4E79A7"
+)
+
+ggplot(
+  alpha_df_PS_rare_sponge,
+  aes(x = Tank_Type, y = Observed, fill = Tank_Type)
+) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+  facet_wrap(~ Timepoint, scales = "free_x") +
+
+  # Tank type: Control vs Inoculated (all timepoints)
+  stat_compare_means(
+    method = "wilcox.test",
+    comparisons = list(c("Control", "Inoculated")),
+    label = "p.format"
+  ) +
+
+  scale_fill_manual(values = TANK_COLORS) +
+
+  # Tank type: Existing tank (Harvest only)
+  stat_compare_means(
+    data = subset(alpha_df_PS_rare_sponge, Timepoint == "Harvest"),
+    method = "wilcox.test",
+    comparisons = list(
+      c("Existing_tank", "Control"),
+      c("Existing_tank", "Inoculated")
+    ),
+    label = "p.format",
+    label.y = c(
+      max(alpha_df_PS_rare_sponge$Observed) * 1.05,
+      max(alpha_df_PS_rare_sponge$Observed) * 1.15
+    )
+  ) +
+
+  stat_compare_means(
+    aes(group = Timepoint),
+    method = "wilcox.test",
+    comparisons = list(
+      c("Pre_inoculation", "1_week_post_inoculation"),
+      c("Pre_inoculation", "Harvest"),
+      c("1_week_post_inoculation", "Harvest")
+    ),
+    label = "p.format"
+  ) +
+
+  theme_bw(base_size = 13) +
+  labs(
+    x = NULL,
+    y = "Observed ASVs",
+    title = "Observed ASV richness in sponge samples"
+  ) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "grey90")
+  ) 
+
+ggplot(
+  alpha_df_PS_rare_sponge,
+  aes(x = Timepoint, y = Observed, fill = Timepoint)
+) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.85) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+
+  stat_compare_means(
+    method = "wilcox.test",
+    comparisons = list(
+      c("Pre_inoculation", "1_week_post_inoculation"),
+      c("Pre_inoculation", "Harvest"),
+      c("1_week_post_inoculation", "Harvest")
+    ),
+    label = "p.format"
+  ) +
+
+  theme_bw(base_size = 13) +
+  labs(
+    x = NULL,
+    y = "Observed ASVs",
+    title = "Observed ASV richness across timepoints (sponge samples)"
+  ) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "grey90")
+  )
+```
+
+## **[3] Sponge-only beta diversity**
+
+### **[3.1] Jaccard beta diversity (presence/absence, rarefied)**
+
+**Purpose**
+-To assess differences in sponge-associated microbial community composition across experimental groups
+-To evaluate both temporal effects and tank treatment effects using presence/absence data
+
+**Input**
+-PS_sponge_rarefied rarefied phyloseq object
+-Sample metadata containing Timepoint and Tank_Type
+
+**Output**
+-Jaccard distance matrix based on presence/absence of ASVs
+-PCoA ordination plots visualizing community dissimilarity
+-95% confidence ellipses for group-level dispersion
+-PERMANOVA results testing differences across Timepoint and Tank_Type
+-Beta dispersion tests assessing homogeneity of group variances
+
+**Notes**
+-Jaccard distance considers presence or absence of taxa only
+-Analysis is performed on rarefied data to control for sequencing depth
+-PCoA is used to visualize major axes of community dissimilarity
+-PERMANOVA tests whether group centroids differ in multivariate space
+-Beta dispersion tests are used to confirm that PERMANOVA results are not driven by differences in within-group variability
+-Timepoint and Tank_Type are tested separately to avoid confounding effects
+
+
+```{r Beta Jaccard Timepoint}
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+
+PS_rare_sponge
+
+# 1) Convert to presence/absence
+#PS_pa <- transform_sample_counts(
+#  PS_rare_sponge,
+#  function(x) as.numeric(x > 0)
+#)
+
+# 2) Compute Jaccard distance
+jaccard_dist <- phyloseq::distance(
+  PS_rare_sponge,
+  method = "jaccard"
+)
+
+# 3) PCoA ordination
+ord_jaccard <- ordinate(
+  PS_rare_sponge,
+  method = "PCoA",
+  distance = jaccard_dist
+)
+
+# 4) Extract ordination scores + metadata
+ord_df <- plot_ordination(
+  PS_rare_sponge,
+  ord_jaccard,
+  justDF = TRUE
+)
+
+# 5) PCoA plot with confidence ellipses
+p <- ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  stat_ellipse(
+    aes(group = Timepoint),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Jaccard beta diversity (presence/absence)",
+    x = paste0("PCoA1 (", round(ord_jaccard$values$Relative_eig[1] * 100, 1), "%)"),
+    y = paste0("PCoA2 (", round(ord_jaccard$values$Relative_eig[2] * 100, 1), "%)"),
+    color = "Tank_Type"
+  )
+
+ord_df <- ord_df %>%
+  tibble::rownames_to_column("Sample")
+
+
+p <- ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  geom_text_repel(
+    aes(label = Sample),      # change if your column is named differently
+    size = 3,
+    max.overlaps = Inf,
+    show.legend = FALSE
+  ) +
+  stat_ellipse(
+    aes(group = Timepoint),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Jaccard beta diversity (presence/absence)",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_jaccard$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_jaccard$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Tank Type"
+  )
+
+p
+
+
+meta_df <- data.frame(sample_data(PS_rare_sponge))
+
+adonis_jaccard <- adonis2(
+  jaccard_dist ~ Timepoint,
+  data = meta_df,
+  permutations = 999
+)
+
+adonis_jaccard
+
+anova(betadisper(jaccard_dist, meta_df$Timepoint))
+
+```
+
+```{r Beta Jaccard Tank Type }
+
+###############################################################################
+# Beta diversity (Jaccard presence/absence) — Tank_Type comparison
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+
+# Jaccard distance
+jaccard_dist <- phyloseq::distance(
+  PS_rare_sponge,
+  method = "jaccard"
+)
+
+# PCoA ordination
+ord_jaccard <- ordinate(
+  PS_rare_sponge,
+  method = "PCoA",
+  distance = jaccard_dist
+)
+
+# Extract scores + metadata
+ord_df <- plot_ordination(
+  PS_rare_sponge,
+  ord_jaccard,
+  justDF = TRUE
+)
+
+ord_df <- ord_df %>%
+  tibble::rownames_to_column("Sample")
+
+# Plot
+ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Tank_Type)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  stat_ellipse(
+    aes(group = Tank_Type),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Jaccard beta diversity by tank type",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_jaccard$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_jaccard$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Tank Type"
+  )
+
+
+meta_df <- data.frame(sample_data(PS_rare_sponge))
+
+adonis_tank <- adonis2(
+  jaccard_dist ~ Tank_Type,
+  data = meta_df,
+  permutations = 999
+)
+
+adonis_tank
+
+anova(betadisper(jaccard_dist, meta_df$Tank_Type))
+
+
+```
+
+## **[4] Sponge-only beta diversity**
+
+### **[4.1] Bray–Curtis beta diversity (abundance-based, non-rarefied)**
+
+**Purpose**
+-To assess differences in sponge-associated microbial community composition based on relative abundances
+-To evaluate treatment and temporal effects while retaining quantitative abundance information
+
+**Input**
+-PS_sponge non-rarefied phyloseq object containing sponge samples only
+-Sample metadata containing Timepoint and Tank_Type
+
+**Output**
+-Bray–Curtis distance matrix based on ASV abundances
+-PCoA ordination plots visualizing abundance-weighted community dissimilarity
+-95% confidence ellipses for group-level dispersion
+-PERMANOVA results testing differences across Timepoint and Tank_Type
+-Beta dispersion test results assessing homogeneity of group variances
+
+**Notes**
+-Bray–Curtis distance incorporates abundance information and is sensitive to dominant taxa
+-Non-rarefied data are used to preserve relative abundance structure
+-PCoA is used for ordination of multivariate distance relationships
+-PERMANOVA tests for differences in group centroids in multivariate space
+-Beta dispersion tests are required to verify that PERMANOVA results are not driven by unequal within-group dispersion
+-Timepoint and Tank_Type are tested separately to reduce confounding effects
+
+
+```{r Beta Bray Curtis Timepoint}
+
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(ggrepel)
+
+# 1) Bray–Curtis distance (non-rarefied)
+bray_dist <- phyloseq::distance(
+  PS_sponge,
+  method = "bray"
+)
+
+# 2) PCoA ordination
+ord_bray <- ordinate(
+  PS_sponge,
+  method = "PCoA",
+  distance = bray_dist
+)
+
+# 3) Extract ordination scores + metadata
+ord_df <- plot_ordination(
+  PS_sponge,
+  ord_bray,
+  justDF = TRUE
+)
+
+
+ord_df <- plot_ordination(
+  PS_sponge,
+  ord_bray,
+  justDF = TRUE
+) %>%
+  tibble::rownames_to_column("Sample")
+
+
+# 4) PCoA plot by Tank_Type
+p_bray <- ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Tank_Type)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  geom_text_repel(
+    aes(label = Sample),
+    size = 3,
+    max.overlaps = Inf,
+    show.legend = FALSE
+  ) +
+  stat_ellipse(
+    aes(group = Tank_Type),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Bray–Curtis beta diversity (abundance-based)",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_bray$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_bray$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Tank Type"
+  )
+
+p_bray
+
+# 5) PERMANOVA: Tank_Type
+meta_df <- data.frame(sample_data(PS_sponge))
+
+adonis_bray_tank <- adonis2(
+  bray_dist ~ Tank_Type,
+  data = meta_df,
+  permutations = 999
+)
+
+adonis_bray_tank
+
+# 6) Beta dispersion check
+anova(betadisper(bray_dist, meta_df$Tank_Type))
+
+```
+
+## **[5] Sponge-only relative abundance analysis**
+
+### **[5.1] Genus-level relative abundance across individual sponge samples**
+
+**Purpose**
+-To visualize genus-level community composition across individual sponge samples
+-To assess temporal and treatment-associated shifts in dominant bacterial taxa
+-To summarize complex community structure while retaining per-sample resolution
+
+**Input**
+-PS_sponge phyloseq object containing sponge samples only
+-Sample metadata including Sample, Tank_Type, Timepoint, and Sample_Number
+-Taxonomic annotations at the genus level
+
+**Output**
+-Ps_sponge_no_euk_no_control phyloseq object with host and eukaryotic taxa removed
+-rel_df_sum data frame containing per-sample genus-level relative abundances
+-Faceted stacked bar plots of relative abundance by sample and timepoint
+
+**Notes**
+-Sample 73 is excluded prior to analysis as a predefined outlier or control
+-Eukaryotic taxa, chloroplasts, and zero-abundance taxa are removed before plotting
+-Relative abundances are calculated per sample without rarefaction
+-Only the top 30 genera globally are displayed; remaining taxa are collapsed into Other
+-Samples are ordered by timepoint and tank type to aid visual interpretation
+-Genus colors are assigned based on overall abundance to improve visual consistency
+
+```{r Genus level relative abundances,fig.width = 20,fig.height = 10, out.width = "100%", dpi = 300}
+
+library(tidyverse)
+library(colorspace)
+library(Polychrome)
+
+
+PS_sponge_nocontrol <- subset_samples(PS_sponge, Sample_Number != "73")
+
+
+PS_sponge_nocontrol
+
+Ps_sponge_no_euk_no_control <- subset_taxa(PS_sponge_nocontrol,Kingdom !="d__Eukaryota" )
+
+
+Ps_sponge_no_euk_no_control <- prune_taxa(
+  taxa_sums(Ps_sponge_no_euk_no_control) > 0,
+  Ps_sponge_no_euk_no_control
+)
+
+
+Ps_sponge_no_euk_no_control <- subset_taxa(
+  Ps_sponge_no_euk_no_control,
+  Order != "Chloroplast"
+)
+
+
+Ps_sponge_no_euk_no_control
+
+# 1) Relative abundance per sample
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt
+rel_df <- psmelt(ps_rel) %>%
+  mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
+
+# 3) Top 30 genera globally
+top_genera <- rel_df %>%
+  group_by(Genus) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  slice_head(n = 30) %>%
+  pull(Genus)
+
+# 4) Collapse others
+rel_df <- rel_df %>%
+  mutate(Genus_plot = ifelse(Genus %in% top_genera, Genus, "Other"))
+
+# 5) Keep INDIVIDUAL samples
+rel_df_sum <- rel_df %>%
+  group_by(Sample, Timepoint, Tank_Type, Genus_plot) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Sample) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 6) Order Tank_Type
+rel_df_sum <- rel_df_sum %>%
+  mutate(
+    Tank_Type = factor(Tank_Type, levels = c("Control", "Inoculated", "Existing_tank"))
+  )
+
+# 7) Order Timepoint (THIS IS THE FIX)
+rel_df_sum <- rel_df_sum %>%
+  mutate(
+    Timepoint = factor(
+      Timepoint,
+      levels = c("Pre_inoculation", "1_week_post_inoculation", "Harvest")
+    )
+  )
+
+# 8) Order samples within each timepoint by Tank_Type
+sample_levels <- rel_df_sum %>%
+  distinct(Sample, Timepoint, Tank_Type) %>%
+  arrange(Timepoint, Tank_Type, Sample) %>%
+  pull(Sample)
+
+rel_df_sum <- rel_df_sum %>%
+  mutate(Sample = factor(Sample, levels = sample_levels))
+
+# 9) Genus order + colors
+genus_levels <- rel_df_sum %>%
+  group_by(Genus_plot) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Genus_plot)
+
+rel_df_sum$Genus_plot <- factor(rel_df_sum$Genus_plot, levels = genus_levels)
+
+genus_colors <- c(
+  setNames(
+    createPalette(length(genus_levels) - 1, c("#000000", "#FFFFFF")),
+    setdiff(genus_levels, "Other")
+  ),
+  "Other" = "grey80"
+)
+
+
+ggplot(
+  rel_df_sum,
+  aes(x = Sample, y = Abundance, fill = Genus_plot)
+) +
+  geom_col(color = "black", linewidth = 0.15) +
+  facet_wrap(
+    ~ Timepoint,
+    nrow = 1,
+    scales = "free_x"
+  ) +
+  scale_x_discrete(
+    labels = function(x) {
+      rel_df_sum$Tank_Type[match(x, rel_df_sum$Sample)]
+    }
+  ) +
+  scale_fill_manual(values = genus_colors) +
+  theme_bw(base_size = 13) +
+  theme(
+  legend.position = "bottom",
+  legend.key.size = unit(0.35, "cm"),
+  legend.text = element_text(size = 10),
+  legend.title = element_text(size = 11),
+  legend.spacing.x = unit(0.15, "cm"),
+  legend.spacing.y = unit(0.1, "cm"),
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 0.5,
+      hjust = 1
+    )
+) +
+guides(
+  fill = guide_legend(
+    nrow = 4,
+    byrow = TRUE
+  )
+)
+```
+
+### **[6] Targeted genus-level relative abundance across timepoints**
+
+**Purpose**
+-To visualize relative abundances of selected bacterial genera of interest across experimental timepoints
+-To compare temporal and treatment-associated shifts in key genera while retaining interpretability
+-To contextualize dominant genera against the remainder of the community
+
+**Input**
+-Ps_sponge_no_euk_no_control non-rarefied phyloseq object containing sponge samples only
+-Sample metadata including Tank_Type and Timepoint
+-Predefined list of bacterial genera of interest
+
+**Output**
+-rel_df_sum data frame containing genus-level relative abundances aggregated by timepoint and tank type
+-Non-stacked bar charts showing relative abundance of selected genera and Other
+-Separate plots for Pre-inoculation, Post-inoculation, and Harvest timepoints
+
+**Notes**
+-Analysis is performed on non-rarefied data to preserve relative abundance structure
+-Only predefined genera of interest are shown explicitly; all other taxa are collapsed into Other
+-Relative abundances are normalized within each tank type and timepoint
+-Fixed y-axis scaling from 0 to 100 percent is used to enable direct comparison across plots
+-Consistent genus color mapping is applied across all figures to aid visual interpretation
+-Percent labels are included to improve readability without relying on legends
+
+```{r Bacteria of interest across time,fig.width = 20,fig.height = 10, out.width = "100%", dpi = 300}
+
+###############################################################################
+# Non-stacked bar charts of selected genera (plus Other) across timepoints
+#
+# - NON-rarefied data
+# - Genera of interest shown explicitly
+# - All other genera collapsed into "Other"
+# - Percent labels above bars
+# - Fixed y-axis (0–100%) across all plots
+# - Consistent coloring across figures
+###############################################################################
+
+library(phyloseq)
+library(tidyverse)
+library(Polychrome)
+library(scales)
+
+# ----------------------------
+# Genera of interest
+# ----------------------------
+genera_of_interest <- c(
+  "Azospirillum",
+  "Pseudomonas",
+  "Bacillus",
+  "Paenibacillus",
+  "Pantoea",
+  "Enterobacter",
+  "Aeromonas",
+  "Klebsiella",
+  "Ralstonia"
+)
+
+# ----------------------------
+# Relative abundance transform
+# ----------------------------
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# ----------------------------
+# Melt + clean taxonomy
+# ----------------------------
+rel_df <- psmelt(ps_rel) %>%
+  mutate(
+    Genus = ifelse(is.na(Genus), "Unclassified", Genus),
+    Genus_classifications = ifelse(Genus %in% genera_of_interest, Genus, "Other")
+  )
+
+# ----------------------------
+# Aggregate + renormalize
+# ----------------------------
+rel_df_sum <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Genus_classifications) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# ----------------------------
+# Factor order + colors
+# ----------------------------
+genus_levels <- c(genera_of_interest, "Other")
+rel_df_sum$Genus_classifications <- factor(rel_df_sum$Genus_classifications, levels = genus_levels)
+
+
+genus_colors <- c(
+  setNames(
+    createPalette(length(genera_of_interest), c("#000000", "#FFFFFF")),
+    genera_of_interest
+  ),
+  "Other" = "grey80"
+)
+
+# Explicitly recolor Pseudomonas (avoid grey conflict)
+genus_colors["Pseudomonas"] <- "#1F78B4"
+
+# ----------------------------
+# Plotting function
+# ----------------------------
+plot_timepoint_bar <- function(tp, title_text, tanks) {
+  ggplot(
+    filter(rel_df_sum, Timepoint == tp, Tank_Type %in% tanks),
+    aes(x = Genus_classifications, y = Abundance, fill = Genus_classifications)
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      color = "black",
+      linewidth = 0.2
+    ) +
+    geom_text(
+      aes(label = percent(Abundance, accuracy = 1)),
+      vjust = -0.3,
+      size = 3
+    ) +
+    facet_wrap(~ Tank_Type) +
+    scale_fill_manual(values = genus_colors) +
+    scale_y_continuous(
+      limits = c(0, 1),
+      labels = scales::percent_format(accuracy = 1)
+    ) +
+    theme_bw(base_size = 13) +
+    labs(
+      title = title_text,
+      x = "Genus",
+      y = "Relative abundance (%)"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+}
+
+# ----------------------------
+# Generate plots
+# ----------------------------
+p_pre <- plot_timepoint_bar(
+  "Pre_inoculation",
+  "Pre-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_post <- plot_timepoint_bar(
+  "1_week_post_inoculation",
+  "Post-inoculation",
+  c("Control", "Inoculated")
+)
+
+p_harvest <- plot_timepoint_bar(
+  "Harvest",
+  "Harvest",
+  c("Control", "Inoculated", "Existing_tank")
+)
+
+
+(p_pre + p_post + p_harvest) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+```
+
+## **[7] Sponge-only relative abundance analysis**
+
+### **[7.3] Phylum-level relative abundance across timepoints and tank types**
+
+**Purpose**
+-To visualize broad taxonomic shifts in sponge-associated microbial communities at the phylum level
+-To compare community composition across timepoints and tank treatments using relative abundance
+-To provide a high-level overview of dominant phyla and overall community structure
+
+**Input**
+-Ps_sponge_no_euk_no_control non-rarefied phyloseq object containing sponge samples only
+-Sample metadata including Timepoint and Tank_Type
+-Taxonomic annotations at the phylum level
+
+**Output**
+-pie_df data frame containing phylum-level relative abundances aggregated by timepoint and tank type
+-Faceted pie charts displaying relative abundance of dominant phyla across experimental conditions
+
+**Notes**
+-Analysis is performed on non-rarefied data to preserve relative abundance information
+-Relative abundances are calculated per sample and then aggregated within timepoint and tank type
+-Only the top eight most abundant phyla are displayed explicitly; remaining phyla are collapsed into Other
+-Phylum ordering and color mapping are fixed globally to ensure consistency across facets
+-Unclassified taxa are retained and labeled explicitly
+-Pie charts are intended for descriptive visualization rather than statistical inference
+
+
+```{r Phylum level pie charts, fig.width = 20,fig.height = 10, out.width = "100%", dpi = 300}
+
+library(phyloseq)
+library(tidyverse)
+library(colorspace)
+
+# 1) Transform counts to relative abundance (per sample)
+ps_rel <- transform_sample_counts(
+  Ps_sponge_no_euk_no_control,
+  function(x) x / sum(x)
+)
+
+# 2) Melt to long format
+rel_df <- psmelt(ps_rel)
+
+# 3) Keep target timepoints and clean taxonomy
+rel_df <- rel_df %>%
+  filter(Timepoint %in% c(
+    "Pre_inoculation",
+    "1_week_post_inoculation",
+    "Harvest"
+  )) %>%
+  mutate(
+    Timepoint = factor(
+      Timepoint,
+      levels = c(
+        "Pre_inoculation",
+        "1_week_post_inoculation",
+        "Harvest"
+      )
+    ),
+    Phylum = ifelse(is.na(Phylum), "Unclassified", Phylum)
+  )
+
+# 4) Aggregate by Timepoint × Tank_Type × Phylum
+pie_df <- rel_df %>%
+  group_by(Timepoint, Tank_Type, Phylum) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Timepoint, Tank_Type) %>%
+  mutate(Abundance = Abundance / sum(Abundance)) %>%
+  ungroup()
+
+# 5) Order phyla globally for consistent colors
+phylum_order <- pie_df %>%
+  group_by(Phylum) %>%
+  summarise(total_abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(total_abundance)) %>%
+  pull(Phylum)
+
+pie_df <- pie_df %>%
+  mutate(
+    Tank_Type = factor(
+      Tank_Type,
+      levels = c(
+        "Control",
+        "Inoculated",
+        "Existing_tank"
+      )
+    )
+  )
+
+phylum_colors <- setNames(
+  qualitative_hcl(
+    n = length(phylum_order),
+    palette = "Dynamic"   # use Dynamic; Glasbey not valid here
+  ),
+  phylum_order
+)
+
+library(Polychrome)
+
+phylum_colors <- setNames(
+  createPalette(
+    length(levels(pie_df$Phylum)),
+    c("#000000", "#FFFFFF")
+  ),
+  levels(pie_df$Phylum)
+)
+
+pie_df <- pie_df %>%
+  mutate(
+    Phylum_plot = if_else(
+      Phylum %in% phylum_order[1:8],  # top 8 only
+      as.character(Phylum),
+      "Other"
+    )
+  )
+
+pie_df$Phylum_plot <- factor(
+  pie_df$Phylum_plot,
+  levels = c(phylum_order[1:8], "Other")
+)
+
+pie_df$Tank_Type <- factor(
+  pie_df$Tank_Type,
+  levels = c("Control", "Inoculated", "Existing_tank")
+)
+library(Polychrome)
+
+phylum_colors <- setNames(
+  glasbey.colors(length(levels(pie_df$Phylum_plot))),
+  levels(pie_df$Phylum_plot)
+)
+
+phylum_colors["Proteobacteria"] <- "#4D4D4D"
+
+ggplot(pie_df, aes(x = "", y = Abundance, fill = Phylum)) +
+  geom_col(width = 1.1, color = "black", linewidth = 0.2) +
+  coord_polar(theta = "y") +
+  facet_grid(
+    Tank_Type ~ Timepoint,
+    drop = TRUE,
+    switch = "y"
+  ) +
+  scale_fill_manual(values = phylum_colors) +
+  theme_void(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    
+    strip.text.x = element_text(face = "bold", size = 13),
+    strip.text.y = element_text(face = "bold", size = 13),
+    strip.placement = "outside",
+    
+    panel.spacing.x = unit(2.2, "lines"),
+    panel.spacing.y = unit(1.8, "lines"),
+    
+    plot.margin = margin(20, 20, 20, 20)
+  ) +
+  labs(fill = "Phylum")
+
+```
+
+
+## **[8] Control Investigation for Bacillus**
+
+
+
+
+```{r}
+
+library(phyloseq)
+library(tidyverse)
+
+# Pick the phyloseq object that includes controls
+PS_control <- subset_samples(PS_16S, Sample_Number == 73 )  
+
+PS_control
+
+# Subset to control sponge samples (edit the column/value to match your metadata)
+
+PS_control <- prune_taxa(taxa_sums(PS_control) > 0, PS_control)
+
+PS_control
+
+# Inspect Bacillus at Genus rank (if your tax table uses "Genus")
+bac_taxa <- taxa_names(PS_control)[which(tax_table(PS_control)[,"Genus"] == "Bacillus")]
+
+length(bac_taxa)
+bac_taxa
+
+taxa_df_PS_control <- as.data.frame(tax_table(PS_control))
+
+
+library(phyloseq)
+library(tidyverse)
+
+# 1) Transform to relative abundance
+ps_rel <- transform_sample_counts(
+  PS_control,
+  function(x) x / sum(x)
+)
+
+# 2) Agglomerate at Family level
+ps_family <- tax_glom(ps_rel, taxrank = "Family")
+
+# 3) Melt to long format
+family_df <- psmelt(ps_family)
+
+# Replace NA families
+family_df$Family[is.na(family_df$Family)] <- "Unclassified"
+
+# 4) Aggregate across all control samples
+family_summary <- family_df %>%
+  group_by(Family) %>%
+  summarise(Abundance = sum(Abundance)) %>%
+  arrange(desc(Abundance))
+
+# 5) Collapse very small families into "Other" (threshold = 1%)
+# Keep top 10 families
+family_summary <- family_df %>%
+  group_by(Family) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(Abundance))
+
+# Keep top 10 families only
+top_n <- 10
+top_families <- family_summary$Family[1:top_n]
+
+nrow(family_summary_top)
+
+
+family_summary_top <- family_summary %>%
+  mutate(Family = ifelse(Family %in% top_families, Family, "Other")) %>%
+  group_by(Family) %>%
+  summarise(Abundance = sum(Abundance), .groups = "drop") %>%
+  arrange(desc(Abundance))
+
+# 6) Plot pie chart
+ggplot(family_summary_top, aes(x = "", y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  theme_void(base_size = 14) +
+  labs(title = "Family-Level Composition – Control Sponge") +
+  theme(legend.position = "right")
+
+
+# Define highlight color
+family_summary_top$Highlight <- ifelse(
+  family_summary_top$Family == "Bacillaceae",
+  "Bacillaceae",
+  "Other"
+)
+
+# Custom palette
+custom_colors <- c(
+  "Bacillaceae" = "#D62828",   # bold red
+  "Other" = "#BFC0C0"
+)
+
+# For non-bacillus families, use a muted palette
+non_bacillus <- family_summary_top$Family[family_summary_top$Family != "Bacillaceae"]
+
+muted_palette <- RColorBrewer::brewer.pal(min(length(non_bacillus), 11), "Set2")
+
+names(muted_palette) <- non_bacillus
+
+# Combine palettes
+final_colors <- c(
+  "Bacillaceae" = "#D62828",
+  muted_palette
+)
+
+final_colors <- ifelse(
+  family_summary_top$Family == "Bacillaceae",
+  "#D62828",
+  "#CFCFCF"
+)
+
+names(final_colors) <- family_summary_top$Family
+
+
+ggplot(family_summary_top, aes(x = "", y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  theme_void(base_size = 14) +
+  scale_fill_manual(values = final_colors) +
+  labs(title = "Family-Level Composition – Control Sponge") +
+  theme(legend.position = "right")
+
+library(RColorBrewer)
+
+# Get all families
+all_families <- family_summary_top$Family
+
+# Create base palette (can generate unlimited colors)
+base_colors <- colorRampPalette(
+  brewer.pal(8, "Set2")
+)(length(all_families))
+
+names(base_colors) <- all_families
+
+# Override Bacillaceae with strong highlight color
+if ("Bacillaceae" %in% all_families) {
+  base_colors["Bacillaceae"] <- "#D62828"  # bold red
+}
+
+final_colors <- base_colors
+
+ggplot(family_summary_top, aes(x = "", y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  theme_void(base_size = 14) +
+  scale_fill_manual(values = final_colors) +
+  labs(title = "Family-Level Composition – Control Sponge") +
+  theme(legend.position = "right")
+
+```
+
+Plan to investigate the control sample for Bacillus 
+
+(1) Pull out the candidate Bacillus like ASVs from the PS_control 
+```{r}
+library(phyloseq)
+library(tidyverse)
+
+get_bacillus_candidates <- function(ps_object, label_name) {
+  
+  tax <- as.data.frame(tax_table(ps_object))
+  tax$ASV <- rownames(tax)
+  
+  # Make sure columns exist
+  if (!"Family" %in% colnames(tax)) tax$Family <- NA
+  if (!"Order" %in% colnames(tax))  tax$Order  <- NA
+  if (!"Genus" %in% colnames(tax))  tax$Genus  <- NA
+  
+  # Identify Bacillus-like candidates
+  cand_asvs <- tax %>%
+    filter(
+      Family == "Bacillaceae" |
+      Order  == "Bacillales"  |
+      Genus  == "Bacillus"
+    ) %>%
+    pull(ASV)
+  
+  # If none found
+  if (length(cand_asvs) == 0) {
+    cat("No Bacillus-like ASVs found in", label_name, "\n")
+    return(NULL)
+  }
+  
+  # Get abundance data
+  cand_counts <- taxa_sums(prune_taxa(cand_asvs, ps_object))
+  
+  cand_table <- tax %>%
+    filter(ASV %in% cand_asvs) %>%
+    mutate(
+      TotalReads = cand_counts[ASV],
+      Dataset = label_name
+    ) %>%
+    arrange(desc(TotalReads))
+  
+  return(cand_table)
+}
+
+
+cand_control <- get_bacillus_candidates(PS_control, "PS_control")
+
+cand_sponge  <- get_bacillus_candidates(PS_sponge_nocontrol, "PS_sponge_nocontrol")
+
+
+
+nrow(cand_control)
+
+cand_control
+
+nrow(cand_sponge)
+
+
+
+
+shared_asvs <- intersect(cand_control$ASV, cand_sponge$ASV)
+
+length(shared_asvs)
+
+
+control_shared <- cand_control[
+  cand_control$ASV %in% shared_asvs,
+]
+
+sponge_shared <- cand_sponge[
+  cand_sponge$ASV %in% shared_asvs,
+]
+
+
+nrow(control_shared)
+nrow(sponge_shared)
+
+
+shared_table <- merge(
+  control_shared,
+  sponge_shared,
+  by = "ASV",
+  suffixes = c("_Control", "_Sponge")
+)
+
+shared_table
+
+
+# Helper function
+get_bacillaceae_asvs <- function(ps_object) {
+  tax <- as.data.frame(tax_table(ps_object))
+  tax$ASV <- rownames(tax)
+  
+  bac_asvs <- tax %>%
+    filter(Family == "Bacillaceae") %>%
+    pull(ASV)
+  
+  return(bac_asvs)
+}
+
+bac_control_asvs <- get_bacillaceae_asvs(PS_control)
+bac_sponge_asvs  <- get_bacillaceae_asvs(PS_sponge_nocontrol)
+
+length(bac_control_asvs)
+length(bac_sponge_asvs)
+
+
+PS_control_bac <- prune_taxa(bac_control_asvs, PS_control)
+PS_sponge_bac  <- prune_taxa(bac_sponge_asvs, PS_sponge_nocontrol)
+
+PS_control_bac <- subset_taxa(PS_control ,Family == "Bacillaceae" |Order == "Bacillales" | Genus == "Bacillus")
+
+PS_sponge_bac <- subset_taxa(PS_sponge_nocontrol , Family == "Bacillaceae" |Order == "Bacillales" | Genus == "Bacillus")
+
+PS_control_bac
+PS_sponge_bac
+
+PS_control_bac <- prune_taxa(
+  taxa_sums(PS_control_bac) > 0,
+  PS_control_bac
+)
+
+PS_sponge_bac <- prune_taxa(
+  taxa_sums(PS_sponge_bac) > 0,
+  PS_sponge_bac
+)
+
+
+View(as.data.frame(get_taxa(PS_control_bac)))
+
+PS_control_bac_rel <- transform_sample_counts(
+  PS_control_bac,
+  function(x) x / sum(x)
+)
+
+PS_sponge_bac_rel <- transform_sample_counts(
+  PS_sponge_bac,
+  function(x) x / sum(x)
+)
+
+PS_sponge_bac_rel
+
+view(as.data.frame(get_taxa(PS_sponge_bac_rel)))
+
+control_mat <- as.data.frame(otu_table(PS_control_bac_rel))
+sponge_mat  <- as.data.frame(otu_table(PS_sponge_bac_rel))
+
+if (!taxa_are_rows(PS_control_bac_rel)) control_mat <- t(control_mat)
+if (!taxa_are_rows(PS_sponge_bac_rel))  sponge_mat  <- t(sponge_mat)
+
+control_mean <- rowMeans(control_mat)
+sponge_mean  <- rowMeans(sponge_mat)
+
+
+shared_bac_asvs <- intersect(names(control_mean), names(sponge_mean))
+
+bac_comparison <- data.frame(
+  ASV = shared_bac_asvs,
+  MeanRelAbundance_Control = control_mean[shared_bac_asvs],
+  MeanRelAbundance_Sponge  = sponge_mean[shared_bac_asvs]
+)
+
+bac_comparison$FoldChange_Control_vs_Sponge <-
+  (bac_comparison$MeanRelAbundance_Control + 1e-9) /
+  (bac_comparison$MeanRelAbundance_Sponge + 1e-9)
+
+bac_comparison <- bac_comparison[
+  order(-bac_comparison$MeanRelAbundance_Control),
+]
+
+bac_comparison
+
+sum(taxa_sums(PS_control_bac) == 0)
+sum(taxa_sums(PS_sponge_bac) == 0)
+
+
+
+```

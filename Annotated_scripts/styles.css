@@ -1,0 +1,32 @@
+/* Main section headings (##) */
+h2 {
+  color: #2C7FB8;
+  margin-top: 1.4em;
+  border-bottom: 2px solid #2C7FB8;
+  padding-bottom: 0.2em;
+}
+
+/* Subsection headings (###) */
+h3 {
+  color: #4E79A7;
+  margin-top: 1.2em;
+}
+
+/* Bold subsection labels (Purpose, Input, Output, Notes) */
+strong {
+  color: #333333;
+}
+
+/* Code blocks */
+pre code {
+  background-color: #f7f7f7;
+  border: 1px solid #dddddd;
+  padding: 8px;
+  border-radius: 4px;
+}
+
+/* Figure captions */
+.figure-caption {
+  font-size: 0.9em;
+  color: #555555;
+}

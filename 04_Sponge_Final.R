@@ -700,9 +700,13 @@ ggplot(pie_df, aes(x = "", y = Abundance, fill = Phylum)) +
 
 viewtax_table(PS_sponge_no_control)
 
+view(get(PS_sponge_no_control))
+
 sample_data(PS_sponge_no_control)
 
 sample_sums(PS_sponge_no_control)
+
+PS_sponge_no_control
 
 PS_sponge_no_control <- subset_samples(PS_sponge,Sample_Number != "73")
 
@@ -788,6 +792,27 @@ phylum_colors <- setNames(
   levels(pie_df$Phylum)
 )
 
+pie_df <- pie_df %>%
+  mutate(
+    Phylum_plot = if_else(
+      Phylum %in% phylum_order[1:8],  # top 8 only
+      as.character(Phylum),
+      "Other"
+    )
+  )
+
+pie_df$Phylum_plot <- factor(
+  pie_df$Phylum_plot,
+  levels = c(phylum_order[1:8], "Other")
+)
+library(Polychrome)
+
+phylum_colors <- setNames(
+  glasbey.colors(length(levels(pie_df$Phylum_plot))),
+  levels(pie_df$Phylum_plot)
+)
+
+phylum_colors["Proteobacteria"] <- "#4D4D4D"
 
 ggplot(pie_df, aes(x = "", y = Abundance, fill = Phylum)) +
   geom_col(width = 1.1, color = "black", linewidth = 0.2) +
@@ -1114,6 +1139,8 @@ ps_rel <- transform_sample_counts(
   function(x) x / sum(x)
 )
 
+Ps_sponge_no_euk_no_control
+
 # 2) Melt
 rel_df <- psmelt(ps_rel) %>%
   mutate(Genus = ifelse(is.na(Genus), "Unclassified", Genus))
@@ -1179,217 +1206,6 @@ genus_colors <- c(
   "Other" = "grey80"
 )
 
-# 10) Plot: individual samples, Tank_Type labels, facetted by Timepoint
-ggplot(
-  rel_df_sum,
-  aes(x = Sample, y = Abundance, fill = Genus_plot)
-) +
-  geom_col(color = "black", linewidth = 0.15) +
-  facet_wrap(
-    ~ Timepoint,
-    nrow = 1,
-    scales = "free_x"
-  ) +
-  scale_x_discrete(
-    labels = function(x) {
-      rel_df_sum$Tank_Type[match(x, rel_df_sum$Sample)]
-    }
-  ) +
-  scale_fill_manual(values = genus_colors) +
-  theme_bw(base_size = 13) +
-  theme(
-    # ---- axes ----
-    axis.text.x = element_text(
-      angle = 90,
-      hjust = 1,
-      vjust = 0.5,
-      size = 9
-    ),
-    
-    # ---- legend (VERTICAL) ----
-    legend.position = "bottom",
-    legend.box = "vertical",
-    legend.key.size = unit(0.45, "cm"),
-    legend.text = element_text(size = 11),
-    legend.title = element_text(size = 12),
-    legend.spacing.y = unit(0.3, "cm"),
-    
-    # ---- titles ----
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-    plot.subtitle = element_text(size = 12, hjust = 0.5)
-  ) +
-  guides(
-    fill = guide_legend(
-      ncol = 1,        # <<< THIS makes labels vertical
-      byrow = TRUE
-    )
-  ) +
-  labs(
-    title = "Timepoint",
-    subtitle = "Genus-level relative abundance by individual sample",
-    x = "Tank Type",
-    y = "Relative abundance",
-    fill = "Genus"
-  )
-
-
-ggplot(
-  rel_df_sum,
-  aes(x = Sample, y = Abundance, fill = Genus_plot)
-) +
-  geom_col(color = "black", linewidth = 0.15) +
-  facet_wrap(
-    ~ Timepoint,
-    nrow = 1,
-    scales = "free_x"
-  ) +
-  scale_x_discrete(
-    labels = function(x) {
-      rel_df_sum$Tank_Type[match(x, rel_df_sum$Sample)]
-    }
-  ) +
-  scale_fill_manual(values = genus_colors) +
-  theme_bw(base_size = 13) +
-  theme(
-    # ---- axes ----
-    axis.text.x = element_text(
-      angle = 90,
-      hjust = 1,
-      vjust = 0.5,
-      size = 9
-    ),
-    
-    # ---- legend (VERTICAL) ----
-    legend.position = "bottom",
-    legend.box = "vertical",
-    legend.key.size = unit(0.45, "cm"),
-    legend.text = element_text(size = 11),
-    legend.title = element_text(size = 12),
-    legend.spacing.y = unit(0.3, "cm"),
-    
-    # ---- titles ----
-    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
-    plot.subtitle = element_text(size = 12, hjust = 0.5)
-  ) +
-  guides(
-    fill = guide_legend(
-      ncol = 1,        # <<< THIS makes labels vertical
-      byrow = TRUE
-    )
-  ) +
-  labs(
-    title = "Timepoint",
-    subtitle = "Genus-level relative abundance by individual sample",
-    x = "Tank Type",
-    y = "Relative abundance",
-    fill = "Genus"
-  )
-
-
-
-
-ggplot(
-  rel_df_sum,
-  aes(x = Sample, y = Abundance, fill = Genus_plot)
-) +
-  geom_col(color = "black", linewidth = 0.15) +
-  facet_wrap(
-    ~ Timepoint,
-    nrow = 1,
-    scales = "free_x"
-  ) +
-  scale_x_discrete(
-    labels = function(x) {
-      rel_df_sum$Tank_Type[match(x, rel_df_sum$Sample)]
-    }
-  ) +
-  scale_fill_manual(values = genus_colors) +
-  theme_bw(base_size = 13) +
-  theme(
-    axis.text.x = element_text(
-      angle = 90,
-      hjust = 1,
-      vjust = 0.5,
-      size = 9
-    ),
-    
-    # ---- LEGEND: make genus labels larger ----
-    legend.position = "bottom",
-    legend.box = "vertical",
-    legend.key.size = unit(0.55, "cm"),   # slightly larger color boxes
-    legend.text = element_text(size = 13),# <<< BIGGER GENUS LABELS
-    legend.title = element_text(size = 14),
-    legend.spacing.y = unit(0.35, "cm"),
-    
-    # ---- titles ----
-    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
-    plot.subtitle = element_text(size = 13, hjust = 0.5)
-  ) +
-  guides(
-    fill = guide_legend(
-      ncol = 1,        # keep legend vertical
-      byrow = TRUE
-    )
-  ) +
-  labs(
-    title = "Timepoint",
-    subtitle = "Genus-level relative abundance by individual sample",
-    x = "Tank Type",
-    y = "Relative abundance",
-    fill = "Genus"
-  )
-
-ggplot(
-  rel_df_sum,
-  aes(x = Sample, y = Abundance, fill = Genus_plot)
-) +
-  geom_col(color = "black", linewidth = 0.15) +
-  facet_wrap(
-    ~ Timepoint,
-    nrow = 1,
-    scales = "free_x"
-  ) +
-  scale_x_discrete(
-    labels = function(x) {
-      rel_df_sum$Tank_Type[match(x, rel_df_sum$Sample)]
-    }
-  ) +
-  scale_fill_manual(values = genus_colors) +
-  theme_bw(base_size = 13) +
-  theme(
-    # X-axis labels vertical
-    axis.text.x = element_text(
-      angle = 90,
-      hjust = 1,
-      vjust = 0.5,
-      size = 9
-    ),
-    
-    # FORCE legend to be horizontal
-    legend.position = "bottom",
-    legend.box = "horizontal",
-    legend.key.size = unit(0.55, "cm"),
-    legend.text = element_text(size = 13),
-    legend.title = element_text(size = 14),
-    legend.spacing.x = unit(0.6, "cm"),
-    legend.spacing.y = unit(0.2, "cm"),
-    
-    plot.title = element_text(face = "bold", size = 15, hjust = 0.5),
-    plot.subtitle = element_text(size = 13, hjust = 0.5)
-  ) +
-  guides(
-    fill = guide_legend(
-      nrow = 1,      # <<< THIS IS THE KEY LINE
-      byrow = TRUE
-    )
-  ) +
-  labs(
-    title = "Timepoint",
-    subtitle = "Genus-level relative abundance by individual sample",
-    x = "Tank Type",
-    y = "Relative abundance",
-    fill = "Genus"
-  )
 
 ggplot(
   rel_df_sum,
@@ -2143,3 +1959,10 @@ p_harvest
   plot_layout(guides = "collect") &
   theme(legend.position = "bottom")
 
+
+
+
+##CONTROL INVESTIGATION 
+PS_16S_Control
+
+PS_16S
