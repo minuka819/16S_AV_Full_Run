@@ -357,7 +357,7 @@ library(vegan)
 
 # 1) Convert to presence/absence
 ps_pa <- transform_sample_counts(
-  ps_sponge_rarefied,
+  PS_sponge_rarefied,
   function(x) as.numeric(x > 0)
 )
 
@@ -455,6 +455,11 @@ adonis_jaccard
 
 anova(betadisper(jaccard_dist, meta_df$Timepoint))
 
+
+#retry
+
+
+
 ###############################################################################
 # Beta diversity (Jaccard presence/absence) — Tank_Type comparison
 ###############################################################################
@@ -471,20 +476,20 @@ ps_pa <- transform_sample_counts(
 
 # Jaccard distance
 jaccard_dist <- phyloseq::distance(
-  ps_sponge_rarefied_no_control,
+  PS_sponge_rarefied,
   method = "jaccard"
 )
 
 # PCoA ordination
 ord_jaccard <- ordinate(
-  ps_sponge_rarefied_no_control,
+  PS_sponge_rarefied,
   method = "PCoA",
   distance = jaccard_dist
 )
 
 # Extract scores + metadata
 ord_df <- plot_ordination(
-  ps_sponge_rarefied_no_control,
+  PS_sponge_rarefied,
   ord_jaccard,
   justDF = TRUE
 )
@@ -529,6 +534,234 @@ adonis_tank <- adonis2(
 adonis_tank
 
 anova(betadisper(jaccard_dist, meta_df$Tank_Type))
+
+
+# Presence / absence transform
+ps_pa <- transform_sample_counts(
+  Ps_sponge_rarefied_no_control,
+  function(x) as.numeric(x > 0)
+)
+
+ord_df$SampleID <- rownames(ord_df)
+
+# Jaccard distance
+jaccard_dist <- phyloseq::distance(
+  PS_sponge_rarefied,
+  method = "jaccard"
+)
+
+# PCoA ordination
+ord_jaccard <- ordinate(
+  PS_sponge_rarefied,
+  method = "PCoA",
+  distance = jaccard_dist
+)
+
+# Extract scores + metadata
+ord_df <- plot_ordination(
+  PS_sponge_rarefied,
+  ord_jaccard,
+  justDF = TRUE
+)
+
+# Plot
+ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  
+  geom_text_repel(
+    aes(label = SampleID),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  
+  stat_ellipse(
+    aes(group = Timepoint),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Jaccard beta diversity by Timepoint",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_jaccard$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_jaccard$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Timepoint"
+  )
+
+
+library(ggrepel)
+
+# Add sample names (if not already added)
+ord_df$SampleID <- rownames(ord_df)
+
+ggplot(
+  ord_df,
+  aes(x = Axis.1, y = Axis.2, color = Tank_Type)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  
+  geom_text_repel(
+    aes(label = SampleID),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  
+  stat_ellipse(
+    aes(group = Tank_Type),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Jaccard beta diversity by Tank type",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_jaccard$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_jaccard$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Tank type"
+  )
+
+
+# Bray–Curtis distance (abundance)
+bray_dist <- phyloseq::distance(
+  PS_sponge,
+  method = "bray"
+)
+ord_bray <- ordinate(
+  PS_sponge,
+  method = "PCoA",
+  distance = bray_dist
+)
+ord_bray_df <- plot_ordination(
+  PS_sponge,
+  ord_bray,
+  justDF = TRUE
+)
+library(ggrepel)
+
+ggplot(
+  ord_bray_df,
+  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  
+  stat_ellipse(
+    aes(group = Timepoint),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Bray–Curtis beta diversity by Timepoint",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_bray$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_bray$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Timepoint"
+  )
+
+# Add sample names
+ord_bray_df$SampleID <- rownames(ord_bray_df)
+
+library(ggrepel)
+
+ggplot(
+  ord_bray_df,
+  aes(x = Axis.1, y = Axis.2, color = Timepoint)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  
+  geom_text_repel(
+    aes(label = SampleID),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  
+  stat_ellipse(
+    aes(group = Timepoint),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Bray–Curtis beta diversity by Timepoint",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_bray$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_bray$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Timepoint"
+  )
+
+ggplot(
+  ord_bray_df,
+  aes(x = Axis.1, y = Axis.2, color = Tank_Type)
+) +
+  geom_point(size = 3, alpha = 0.9) +
+  
+  geom_text_repel(
+    aes(label = SampleID),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  
+  stat_ellipse(
+    aes(group = Tank_Type),
+    type = "t",
+    level = 0.95,
+    linewidth = 1
+  ) +
+  
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Bray–Curtis beta diversity by Tank type",
+    x = paste0(
+      "PCoA1 (",
+      round(ord_bray$values$Relative_eig[1] * 100, 1),
+      "%)"
+    ),
+    y = paste0(
+      "PCoA2 (",
+      round(ord_bray$values$Relative_eig[2] * 100, 1),
+      "%)"
+    ),
+    color = "Tank type"
+  )
 
 
 ###############################################################################
